@@ -442,7 +442,12 @@ export interface WorkflowActivationSpec {
  * Read-only and repair tasks fail loud when the host provides none.
  */
 export interface WorkflowChildToolScope {
-  readonly registerPreset: (rows: readonly { readonly name: string }[]) => Promise<() => Promise<void>>
+  /**
+   * Register a dynamic preset under exactly the id the activation request
+   * references as `agentPreset`: the runtime resolves that id against the
+   * preset registry at spawn time, so an id mismatch fails every child.
+   */
+  readonly registerPreset: (id: string, rows: readonly { readonly name: string }[]) => Promise<() => Promise<void>>
   readonly reserveChild: (childId: SessionId, allow: readonly string[]) => void
   readonly releaseChild: (childId: SessionId) => void
 }

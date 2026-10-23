@@ -10,6 +10,11 @@ import { WorkflowRunStore } from '../src/store.js'
 import type { ResolvedWorkflowConfig, WorkflowActivationSpec, WorkflowDispatchAdapter, WorkflowModule, WorkflowStartInput } from '../src/types.js'
 import type { WorkflowVerificationAdapter, WorktreeIsolationAdapter } from '../src/types.js'
 
+// Mirrors the real runtime spawn validation: an activation request may only
+// reference an agentPreset id that is registered at start time (the exact
+// hole that let the preset-id seam break reach E6; see 03-变更说明).
+const registeredPresets = new Set<string>()
+
 function parent(cwd: string): Agent {
   const events: unknown[] = []
   return { session: { header: { cwd }, events, snapshotEvents: () => [...events], append: vi.fn() }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'write' }, { name: 'shell' }] } } } as unknown as Agent
@@ -54,6 +59,9 @@ interface FakeSubagents {
 function subagents(handler?: (provider: string, request: Omit<WorkflowActivationSpec['request'], never>, index: number) => Promise<{ output: { type: 'text'; text: string }[]; structured?: unknown; stopReason: 'completed' | 'error' | 'aborted' }>, initialLocalAgent?: Agent): FakeSubagents {
   let index = 0
   const starts = vi.fn(async (spec: WorkflowActivationSpec) => {
+    if (spec.request.agentPreset !== undefined && !registeredPresets.has(spec.request.agentPreset)) {
+      throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
+    }
     const current = ++index
     const result = handler === undefined
       ? Promise.resolve({ output: [{ type: 'text' as const, text: `result-${current}` }], stopReason: 'completed' as const })
@@ -99,7 +107,10 @@ async function fixture(options: {
       ? { resolveLiveAgent: options.resolveLiveAgent }
       : fake.liveAgent === undefined ? {} : { resolveLiveAgent: () => fake.liveAgent }),
     childTools: {
-      registerPreset: async () => async () => undefined,
+      registerPreset: async (id: string, _rows: readonly { readonly name: string }[]) => {
+        registeredPresets.add(id)
+        return async () => { registeredPresets.delete(id) }
+      },
       reserveChild: () => undefined,
       releaseChild: () => undefined,
     },
@@ -364,7 +375,7 @@ describe('dynamic workflow engine', () => {
       config: config({ readOnlyToolFilter: { deny: ['read', 'write', 'shell'] } }),
       store: fx.store,
       resolveNested: async () => { throw new Error('nested workflow not found') },
-      childTools: { registerPreset: async () => async () => undefined, reserveChild: () => undefined, releaseChild: () => undefined },
+      childTools: { registerPreset: async (id: string) => { registeredPresets.add(id); return async () => { registeredPresets.delete(id) } }, reserveChild: () => undefined, releaseChild: () => undefined },
       id: () => 'run-policy-change',
     })
     const resumed = await stricter.start({ module: fx.module, source: 'run-snapshot', parent: fx.parent, resumeFromRunId: first.runId })

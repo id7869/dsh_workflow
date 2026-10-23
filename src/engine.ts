@@ -1141,7 +1141,7 @@ export class DynamicWorkflowEngine {
         const plan = readOnlyPackageRows(readOnlyAllow)
         if (plan.unmapped.length > 0) this.emit(run, 'workflow-log', { message: `read-only tool names without a package mapping are ignored: ${plan.unmapped.join(', ')}`, data: {} })
         agentPresetId = `dsh-external-workflow-ro-${run.snapshot.runId}-${task.sequence}`
-        unregisterPreset = await this.deps.childTools.registerPreset(plan.rows)
+        unregisterPreset = await this.deps.childTools.registerPreset(agentPresetId, plan.rows)
         scopedChildId = SessionId(`dsh-external-workflow-child-${randomUUID()}`)
         this.deps.childTools.reserveChild(scopedChildId, readOnlyAllow)
       }
@@ -1227,7 +1227,7 @@ export class DynamicWorkflowEngine {
             let repairChildId: SessionId | undefined
             try {
               const repairPresetId = `dsh-external-workflow-repair-${run.snapshot.runId}-${task.sequence}`
-              unregisterRepairPreset = await this.deps.childTools.registerPreset([])
+              unregisterRepairPreset = await this.deps.childTools.registerPreset(repairPresetId, [])
               repairChildId = SessionId(`dsh-external-workflow-child-${randomUUID()}`)
               this.deps.childTools.reserveChild(repairChildId, [])
               const repairRequest: Omit<SubagentStartRequest, 'label' | 'signal'> = {

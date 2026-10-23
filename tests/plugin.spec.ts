@@ -88,10 +88,12 @@ describe('Cordis plugin entrypoint', () => {
 
   it('aborts and awaits active workflow children when the Cordis plugin unloads', async () => {
     const childDisposed = vi.fn(async () => {})
+    const presetIds = new Set<string>()
     class StubSubagents extends Service {
       constructor(ctx: Context) { super(ctx, 'subagents') }
       getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } }
-      async startActivation(spec: { readonly childId?: string; readonly signal: AbortSignal }) {
+      async startActivation(spec: { readonly childId?: string; readonly signal: AbortSignal; readonly request: { readonly agentPreset?: string } }) {
+        if (spec.request.agentPreset !== undefined && !presetIds.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
         const result = new Promise<{ output: []; stopReason: 'aborted' }>(resolve => {
           spec.signal.addEventListener('abort', () => resolve({ output: [], stopReason: 'aborted' }), { once: true })
         })
@@ -100,7 +102,10 @@ describe('Cordis plugin entrypoint', () => {
     }
     class StubAgentPresets extends Service {
       constructor(ctx: Context) { super(ctx, 'agentPresets') }
-      async register(_definition: { readonly id: string }) { return async () => undefined }
+      async register(definition: { readonly id: string }) {
+        presetIds.add(definition.id)
+        return async () => { presetIds.delete(definition.id) }
+      }
     }
     class StubTools extends Service {
       constructor(ctx: Context) { super(ctx, 'tools') }
@@ -824,10 +829,12 @@ describe('Cordis plugin entrypoint', () => {
 
   it('completes the real DSH command lifecycle before the handed-off workflow runs', async () => {
     const registeredTools: Array<{ name: string; execute(args: Record<string, unknown>, exec: unknown): Promise<unknown> }> = []
+    const presetIds = new Set<string>()
     class StubSubagents extends Service {
       constructor(ctx: Context) { super(ctx, 'subagents') }
       getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } }
-      async startActivation(spec: { readonly childId?: string }) {
+      async startActivation(spec: { readonly childId?: string; readonly request: { readonly agentPreset?: string } }) {
+        if (spec.request.agentPreset !== undefined && !presetIds.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
         return {
           childId: spec.childId ?? 'lifecycle-child', messageId: 'lifecycle-message',
           result: Promise.resolve({ output: [{ type: 'text' as const, text: 'done' }], stopReason: 'completed' as const }),
@@ -837,7 +844,10 @@ describe('Cordis plugin entrypoint', () => {
     }
     class StubAgentPresets extends Service {
       constructor(ctx: Context) { super(ctx, 'agentPresets') }
-      async register(_definition: { readonly id: string }) { return async () => undefined }
+      async register(definition: { readonly id: string }) {
+        presetIds.add(definition.id)
+        return async () => { presetIds.delete(definition.id) }
+      }
     }
     class StubTools extends Service {
       constructor(ctx: Context) { super(ctx, 'tools') }

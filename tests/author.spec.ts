@@ -30,8 +30,9 @@ function authored(source = `async function run(wf, args) { return await wf.runAg
 
 function service(payloads: unknown[], capabilities = { outputSchema: true, depthLimit: true, agentPreset: true }) {
   let index = 0
-  const startActivation = vi.fn(async (spec: { readonly provider: string; readonly request: { readonly prompt: readonly [{ readonly text?: string }] } }) => {
+  const startActivation = vi.fn(async (spec: { readonly provider: string; readonly request: { readonly prompt: readonly [{ readonly text?: string }]; readonly agentPreset?: string } }) => {
     if (!['scout', 'author'].includes(spec.provider)) throw new Error(`unexpected provider "${spec.provider}"`)
+    if (spec.request.agentPreset !== undefined && !presetRegistry.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
     index += 1
     const payload = payloads[index - 1]
     return {
@@ -48,8 +49,12 @@ function service(payloads: unknown[], capabilities = { outputSchema: true, depth
   }
 }
 
+const presetRegistry = new Set<string>()
 const childTools = {
-  registerPreset: async () => async () => undefined,
+  registerPreset: async (id: string, _rows: readonly { readonly name: string }[]) => {
+    presetRegistry.add(id)
+    return async () => { presetRegistry.delete(id) }
+  },
   reserveChild: () => undefined,
   releaseChild: () => undefined,
 }

@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -696,7 +695,7 @@ export function apply(ctx: Context, config: Config): void {
     ...(jobs === undefined ? {} : { jobs }),
     ...(userQuestions === undefined ? {} : { userQuestions }),
     ...(agents === undefined ? {} : { resolveLiveAgent: (childId: SessionId) => agents.get(childId) }),
-    ...(agentPresets === undefined ? {} : { registerChildPreset: (rows: readonly { readonly name: string }[]) => agentPresets.register({ id: `dsh-external-workflow-preset-${randomUUID()}`, plugins: [...rows] }) }),
+    ...(agentPresets === undefined ? {} : { registerChildPreset: (id: string, rows: readonly { readonly name: string }[]) => agentPresets.register({ id, plugins: [...rows] }) }),
   })
   ctx.inject(['dynamicWorkflows'], child => installSurfaces(child, resolved))
 }
