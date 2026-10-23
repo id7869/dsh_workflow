@@ -15,9 +15,20 @@ import type { WorkflowVerificationAdapter, WorktreeIsolationAdapter } from '../s
 // hole that let the preset-id seam break reach E6; see 03-变更说明).
 const registeredPresets = new Set<string>()
 
-function parent(cwd: string): Agent {
+// Mirrors the runtime composition mount: dsh-tool-fs-search declares
+// sampleOverCapGlobResults required with no fallback, so a bare row fails
+// (E6 缺陷 #4).
+function assertPackageRows(rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]): void {
+  for (const row of rows) {
+    if (row.name === '@deepseek-ai/dsh-tool-fs-search' && row.config?.sampleOverCapGlobResults === undefined) {
+      throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+    }
+  }
+}
+
+function parent(cwd: string, tools: readonly string[] = ['read', 'write', 'shell']): Agent {
   const events: unknown[] = []
-  return { session: { header: { cwd }, events, snapshotEvents: () => [...events], append: vi.fn() }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'write' }, { name: 'shell' }] } } } as unknown as Agent
+  return { session: { header: { cwd }, events, snapshotEvents: () => [...events], append: vi.fn() }, ctx: { tools: { schemas: () => tools.map(name => ({ name })) } } } as unknown as Agent
 }
 
 function agentWithEvents(cwd: string, events: unknown[] = []): Agent {
@@ -90,6 +101,7 @@ async function fixture(options: {
   readonly deploymentSemaphore?: WorkflowSemaphore
   readonly dispatch?: WorkflowDispatchAdapter
   readonly resolveLiveAgent?: (childId: string) => Agent | undefined
+  readonly parentTools?: readonly string[]
 }) {
   const cwd = await mkdtemp(join(tmpdir(), 'dsh-workflow-engine-'))
   const fake = options.fake ?? subagents()
@@ -107,7 +119,8 @@ async function fixture(options: {
       ? { resolveLiveAgent: options.resolveLiveAgent }
       : fake.liveAgent === undefined ? {} : { resolveLiveAgent: () => fake.liveAgent }),
     childTools: {
-      registerPreset: async (id: string, _rows: readonly { readonly name: string }[]) => {
+      registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => {
+        assertPackageRows(rows)
         registeredPresets.add(id)
         return async () => { registeredPresets.delete(id) }
       },
@@ -116,7 +129,7 @@ async function fixture(options: {
     },
     id: () => `run-${++sequence}`,
   })
-  return { cwd, parent: parent(cwd), fake, store, engine, module: module(options.source, options.manifest) }
+  return { cwd, parent: parent(cwd, options.parentTools), fake, store, engine, module: module(options.source, options.manifest) }
 }
 
 describe('dynamic workflow engine', () => {
@@ -154,6 +167,21 @@ describe('dynamic workflow engine', () => {
     expect(fx.store.getEvents(run.runId).map(event => event.type)).toEqual(expect.arrayContaining(['workflow-started', 'phase-started', 'agent-started', 'agent-completed', 'artifact-written', 'workflow-completed']))
     expect(observed).toContain('workflow-completed')
     unsubscribe()
+  })
+
+  it('mounts the fs-search package row with its required config when the parent exposes glob/grep', async () => {
+    // E6 缺陷 #4: the read-only composition mount validates package config,
+    // and dsh-tool-fs-search declares sampleOverCapGlobResults required with
+    // no fallback — the registry stub mirrors that validation.
+    const fx = await fixture({
+      parentTools: ['read', 'write', 'shell', 'glob', 'grep'],
+      source: `async function run(wf, args) { return await wf.runAgent({ name: 'searcher', prompt: 'find', readOnly: true }); }`,
+    })
+    const run = await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent, args: {} })
+    const result = await run.done
+    expect(result.process?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'agent', title: 'searcher', status: 'completed' }),
+    ]))
   })
 
   it('builds a fail-closed read-only allow-list from the real visible catalog shape', () => {
@@ -375,7 +403,7 @@ describe('dynamic workflow engine', () => {
       config: config({ readOnlyToolFilter: { deny: ['read', 'write', 'shell'] } }),
       store: fx.store,
       resolveNested: async () => { throw new Error('nested workflow not found') },
-      childTools: { registerPreset: async (id: string) => { registeredPresets.add(id); return async () => { registeredPresets.delete(id) } }, reserveChild: () => undefined, releaseChild: () => undefined },
+      childTools: { registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => { assertPackageRows(rows); registeredPresets.add(id); return async () => { registeredPresets.delete(id) } }, reserveChild: () => undefined, releaseChild: () => undefined },
       id: () => 'run-policy-change',
     })
     const resumed = await stricter.start({ module: fx.module, source: 'run-snapshot', parent: fx.parent, resumeFromRunId: first.runId })

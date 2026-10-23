@@ -51,7 +51,13 @@ function service(payloads: unknown[], capabilities = { outputSchema: true, depth
 
 const presetRegistry = new Set<string>()
 const childTools = {
-  registerPreset: async (id: string, _rows: readonly { readonly name: string }[]) => {
+  registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => {
+    // Mirrors the runtime mount: fs-search requires sampleOverCapGlobResults.
+    for (const row of rows) {
+      if (row.name === '@deepseek-ai/dsh-tool-fs-search' && row.config?.sampleOverCapGlobResults === undefined) {
+        throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+      }
+    }
     presetRegistry.add(id)
     return async () => { presetRegistry.delete(id) }
   },

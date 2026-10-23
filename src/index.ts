@@ -19,7 +19,7 @@ import { createWorkflowCapsule, validateWorkflowArgs, validateWorkflowManifest }
 import { smokeWorkflowCapsule } from './author.js'
 import { scopedReviewWorkflow, writeReviewPackets } from './scoped-review.js'
 import { DynamicWorkflowService } from './service.js'
-import type { ModelTierRoute, ResolvedWorkflowConfig, WorkflowModule, WorkflowRun, WorkflowRunSnapshot } from './types.js'
+import type { ModelTierRoute, ResolvedWorkflowConfig, WorkflowModule, WorkflowRun, WorkflowRunSnapshot, WorkflowToolPackageRow } from './types.js'
 
 export { DynamicWorkflowService } from './service.js'
 export * from './types.js'
@@ -695,7 +695,7 @@ export function apply(ctx: Context, config: Config): void {
     ...(jobs === undefined ? {} : { jobs }),
     ...(userQuestions === undefined ? {} : { userQuestions }),
     ...(agents === undefined ? {} : { resolveLiveAgent: (childId: SessionId) => agents.get(childId) }),
-    ...(agentPresets === undefined ? {} : { registerChildPreset: (id: string, rows: readonly { readonly name: string }[]) => agentPresets.register({ id, plugins: [...rows] }) }),
+    ...(agentPresets === undefined ? {} : { registerChildPreset: (id: string, rows: readonly WorkflowToolPackageRow[]) => agentPresets.register({ id, plugins: [...rows] }) }),
   })
   ctx.inject(['dynamicWorkflows'], child => installSurfaces(child, resolved))
 }

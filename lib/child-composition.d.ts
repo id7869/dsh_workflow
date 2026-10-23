@@ -7,10 +7,7 @@
  * the same parent-intersected list.
  */
 import type { SessionId } from '@deepseek-ai/dsh-session';
-/** One cordis entry row mounting an official tool package (default config). */
-export interface WorkflowToolPackageRow {
-    readonly name: string;
-}
+import type { WorkflowToolPackageRow } from './types.js';
 /** Deduplicated package rows for one allow list, plus names with no mapping. */
 export declare function readOnlyPackageRows(allow: readonly string[]): {
     readonly rows: readonly WorkflowToolPackageRow[];

@@ -7,33 +7,34 @@
  * the same parent-intersected list.
  */
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { WorkflowToolPackageRow } from './types.js'
 
-/** One cordis entry row mounting an official tool package (default config). */
-export interface WorkflowToolPackageRow {
-  readonly name: string
-}
-
-/** Tool name -> the official package whose composition mounts that tool. */
-const TOOL_PACKAGE_BY_NAME: Readonly<Record<string, string>> = {
-  read: '@deepseek-ai/dsh-tool-fs',
-  read_image: '@deepseek-ai/dsh-tool-fs',
-  glob: '@deepseek-ai/dsh-tool-fs-search',
-  grep: '@deepseek-ai/dsh-tool-fs-search',
-  skill: '@deepseek-ai/dsh-tool-skill',
-  web_search: '@deepseek-ai/dsh-tool-web',
-  lsp: '@deepseek-ai/dsh-tool-lsp',
+/**
+ * Tool name -> the official package row that mounts the tool. Packages whose
+ * config schema declares required fields carry them here: dsh-tool-fs-search
+ * requires sampleOverCapGlobResults with no fallback (E6 缺陷 #4), and the
+ * official tool-catalog value is true.
+ */
+const TOOL_PACKAGE_BY_NAME: Readonly<Record<string, WorkflowToolPackageRow>> = {
+  read: { name: '@deepseek-ai/dsh-tool-fs' },
+  read_image: { name: '@deepseek-ai/dsh-tool-fs' },
+  glob: { name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: true } },
+  grep: { name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: true } },
+  skill: { name: '@deepseek-ai/dsh-tool-skill' },
+  web_search: { name: '@deepseek-ai/dsh-tool-web' },
+  lsp: { name: '@deepseek-ai/dsh-tool-lsp' },
 }
 
 /** Deduplicated package rows for one allow list, plus names with no mapping. */
 export function readOnlyPackageRows(allow: readonly string[]): { readonly rows: readonly WorkflowToolPackageRow[]; readonly unmapped: readonly string[] } {
-  const packages = new Set<string>()
+  const byPackage = new Map<string, WorkflowToolPackageRow>()
   const unmapped: string[] = []
   for (const tool of allow) {
-    const pkg = TOOL_PACKAGE_BY_NAME[tool]
-    if (pkg === undefined) unmapped.push(tool)
-    else packages.add(pkg)
+    const row = TOOL_PACKAGE_BY_NAME[tool]
+    if (row === undefined) unmapped.push(tool)
+    else if (!byPackage.has(row.name)) byPackage.set(row.name, row)
   }
-  return { rows: [...packages].map(name => ({ name })), unmapped }
+  return { rows: [...byPackage.values()], unmapped }
 }
 
 /**

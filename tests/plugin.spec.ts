@@ -15,6 +15,18 @@ import type { WorkflowRun, WorkflowRunSnapshot } from '../src/types.js'
 
 const execFileAsync = promisify(execFile)
 
+// Mirrors the runtime composition mount: dsh-tool-fs-search declares
+// sampleOverCapGlobResults required with no fallback, so a bare row fails
+// (E6 缺陷 #4).
+function assertMountedRows(rows: readonly object[]): void {
+  for (const row of rows) {
+    const { name, config } = row as { name?: string; config?: { sampleOverCapGlobResults?: unknown } }
+    if (name === '@deepseek-ai/dsh-tool-fs-search' && config?.sampleOverCapGlobResults === undefined) {
+      throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+    }
+  }
+}
+
 function snapshot(overrides: Partial<WorkflowRunSnapshot> = {}): WorkflowRunSnapshot {
   return {
     runId: 'run-1', workflow: 'demo', displayName: 'demo', status: 'completed', source: 'inline', execution: 'capability-generated',
@@ -102,7 +114,8 @@ describe('Cordis plugin entrypoint', () => {
     }
     class StubAgentPresets extends Service {
       constructor(ctx: Context) { super(ctx, 'agentPresets') }
-      async register(definition: { readonly id: string }) {
+      async register(definition: { readonly id: string; readonly plugins?: readonly object[] }) {
+        assertMountedRows(definition.plugins ?? [])
         presetIds.add(definition.id)
         return async () => { presetIds.delete(definition.id) }
       }
@@ -110,7 +123,7 @@ describe('Cordis plugin entrypoint', () => {
     class StubTools extends Service {
       constructor(ctx: Context) { super(ctx, 'tools') }
       register(): () => void { return () => {} }
-      schemas(): unknown[] { return [{ name: 'read' }] }
+      schemas(): unknown[] { return [{ name: 'read' }, { name: 'glob' }, { name: 'grep' }] }
     }
     const ctx = new Context()
     const subagents = await ctx.plugin(StubSubagents)
@@ -844,7 +857,8 @@ describe('Cordis plugin entrypoint', () => {
     }
     class StubAgentPresets extends Service {
       constructor(ctx: Context) { super(ctx, 'agentPresets') }
-      async register(definition: { readonly id: string }) {
+      async register(definition: { readonly id: string; readonly plugins?: readonly object[] }) {
+        assertMountedRows(definition.plugins ?? [])
         presetIds.add(definition.id)
         return async () => { presetIds.delete(definition.id) }
       }

@@ -441,13 +441,24 @@ export interface WorkflowActivationSpec {
  * registration plus the roster backing the agent/created restrict injection.
  * Read-only and repair tasks fail loud when the host provides none.
  */
+/**
+ * One Cordis plugin row mounting an official tool package. Packages whose
+ * config schema declares required fields must supply them in `config` — the
+ * runtime composition mount rejects a bare row (dsh-tool-fs-search has no
+ * fallback for sampleOverCapGlobResults).
+ */
+export interface WorkflowToolPackageRow {
+  readonly name: string
+  readonly config?: Readonly<Record<string, unknown>>
+}
+
 export interface WorkflowChildToolScope {
   /**
    * Register a dynamic preset under exactly the id the activation request
    * references as `agentPreset`: the runtime resolves that id against the
    * preset registry at spawn time, so an id mismatch fails every child.
    */
-  readonly registerPreset: (id: string, rows: readonly { readonly name: string }[]) => Promise<() => Promise<void>>
+  readonly registerPreset: (id: string, rows: readonly WorkflowToolPackageRow[]) => Promise<() => Promise<void>>
   readonly reserveChild: (childId: SessionId, allow: readonly string[]) => void
   readonly releaseChild: (childId: SessionId) => void
 }
