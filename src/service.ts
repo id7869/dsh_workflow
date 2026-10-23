@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -41,6 +42,8 @@ export interface DynamicWorkflowServiceOptions {
   readonly verification?: WorkflowVerificationAdapter
   readonly isolation?: WorktreeIsolationAdapter
   readonly dispatch?: WorkflowDispatchAdapter
+  /** 0.2.1: resolves a live child Agent from the host registry after activation. */
+  readonly resolveLiveAgent?: (childId: SessionId) => Agent | undefined
 }
 
 function canonicalProjectDirectory(cwd: string): string {
@@ -246,7 +249,7 @@ export class DynamicWorkflowService extends Service {
     if (jobs === undefined) return undefined
     try {
       return jobs.start({
-        kind: 'workflow', label: run.getSnapshot().workflow, owner: agent,
+        kind: 'workflow', label: run.getSnapshot().workflow, owner: agent.id,
         run: () => ({
           cancel: reason => { this.stop(agent, run.runId, reason) },
           done: run.done.then(snapshot => ({
@@ -289,6 +292,7 @@ export class DynamicWorkflowService extends Service {
       ...(this.verification === undefined ? {} : { verification: this.verification }),
       ...(this.isolation === undefined ? {} : { isolation: this.isolation }),
       ...(this.dispatch === undefined ? {} : { dispatch: this.dispatch }),
+      ...(this.options.resolveLiveAgent === undefined ? {} : { resolveLiveAgent: this.options.resolveLiveAgent }),
       deploymentSemaphore: this.deploymentSemaphore,
       resolveNested: async name => {
         const loaded = await this.load(agent, name)

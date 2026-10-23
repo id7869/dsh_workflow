@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -213,7 +214,7 @@ function handoffWorkflowRequest(agent: Agent, request: string, grants: WorkflowH
         `Minimal example: source \`async function run(wf,args){return await wf.phase("analyze",async()=>{const r=await wf.runAgent({name:"analyst",prompt:String(args?.request??"analyze the task"),readOnly:true,modelHint:"balanced"});return r?.finalText??"no result"})}\` with manifest \`{"name":"focused-analysis","description":"Analyze with one specialist.","phases":["analyze"],"readOnly":true,"maxAgents":1,"maxConcurrency":1,"patterns":["classify-and-act"]}\`. Adapt it to the user's task and pass the original request via args.`,
       ].join('\n'),
     }],
-    source: { kind: 'plugin', plugin: '@dsh-external/workflow', form: 'relay' },
+    source: { kind: 'dsh-external-workflow', form: 'relay' },
   }))
   const message = createUserMessage({
     content: [{ type: 'text', text: trimmed }],
@@ -227,7 +228,7 @@ function handoffWorkflowRequest(agent: Agent, request: string, grants: WorkflowH
 function hasCurrentWorkflowHandoff(agent: Agent, grants: WorkflowHandoffGrants): boolean {
   const expectedMessageId = grants.get(agent)
   if (expectedMessageId === undefined) return false
-  const events = agent.session.events ?? []
+  const events = agent.session.snapshotEvents()
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!
     if (event.type === 'turn/start' || event.type === 'turn/end') return false
@@ -685,12 +686,14 @@ export function apply(ctx: Context, config: Config): void {
   const approval = ctx.get('approval') as ApprovalService | undefined
   const jobs = ctx.get('jobs') as JobRegistry | undefined
   const userQuestions = ctx.get('userQuestions') as UserQuestionService | undefined
+  const agents = ctx.get('agents') as { get(id: SessionId): Agent | undefined } | undefined
   ctx.plugin(DynamicWorkflowService, {
     config: resolved,
     subagents: ctx.subagents,
     ...(approval === undefined ? {} : { approval }),
     ...(jobs === undefined ? {} : { jobs }),
     ...(userQuestions === undefined ? {} : { userQuestions }),
+    ...(agents === undefined ? {} : { resolveLiveAgent: (childId: SessionId) => agents.get(childId) }),
   })
   ctx.inject(['dynamicWorkflows'], child => installSurfaces(child, resolved))
 }

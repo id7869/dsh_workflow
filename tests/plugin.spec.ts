@@ -7,7 +7,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { Context, Service } from '@deepseek-ai/cordis'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import SessionTitleService, { collectSessionTitleMessages } from '@deepseek-ai/dsh-session-title'
+import SessionTitleService, { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { describe, expect, it, vi } from 'vitest'
 import workflowPlugin, { apply, name, type Config } from '../src/index.js'
 import type { WorkflowRun, WorkflowRunSnapshot } from '../src/types.js'
@@ -862,23 +862,28 @@ describe('Cordis plugin entrypoint', () => {
       } as unknown as Agent
 
       const outcome = await Promise.race([
-        ctx.commands.execute(liveAgent, '/workflow inspect and coordinate', exec.signal),
+        ctx.commands.execute(liveAgent, '/workflow inspect and coordinate', [], exec.signal),
         new Promise<'timed-out'>(resolve => setTimeout(() => resolve('timed-out'), 250)),
       ])
       expect(outcome).not.toBe('timed-out')
-      expect(session.events.filter(event => event.type === 'command/run' || event.type === 'command/done').map(event => event.type))
+      expect(session.snapshotEvents().filter(event => event.type === 'command/run' || event.type === 'command/done').map(event => event.type))
         .toEqual(['command/run', 'command/done'])
-      const handoff = session.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+      const handoff = session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'user')
       expect(handoff?.type === 'user/message' ? handoff.data.source : undefined)
         .toMatchObject({ kind: 'user' })
       expect(handoff?.type === 'user/message' ? handoff.data.content : undefined)
         .toEqual([{ type: 'text', text: 'inspect and coordinate' }])
-      expect(collectSessionTitleMessages(session.events)).toEqual([{ seq: handoff!.seq, text: 'inspect and coordinate' }])
-      await vi.waitFor(() => { expect(ctx.sessionTitle.get(session)?.title).toBe('inspect and coordinate') })
-      const relay = session.events.find(event => event.type === 'agent/inbox/spliced')
+      // 0.2.1: session-title's message collector is private; fold the latest
+      // `session/title` event and pair it with the service read, both inside
+      // the wait so the asynchronously generated title lands before asserting.
+      await vi.waitFor(() => {
+        expect(foldSessionTitle(session.snapshotEvents())?.title).toBe('inspect and coordinate')
+        expect(ctx.sessionTitle.get(session)?.title).toBe('inspect and coordinate')
+      })
+      const relay = session.snapshotEvents().find(event => event.type === 'agent/inbox/spliced')
       expect(relay?.type === 'agent/inbox/spliced' ? relay.data.inserted[0]?.source : undefined)
-        .toMatchObject({ kind: 'plugin', plugin: '@dsh-external/workflow', form: 'relay' })
-      const context = session.events.find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
+        .toMatchObject({ kind: 'dsh-external-workflow', form: 'relay' })
+      const context = session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'dsh-external-workflow')
       expect(context?.type === 'user/message' ? context.data.content[0] : undefined)
         .toMatchObject({ type: 'text', text: expect.stringContaining('source + manifest (not request mode)') })
 

@@ -39,11 +39,9 @@ async function oneShot(
   if (provider === undefined) throw new Error(`workflow authoring provider "${route.subagentProvider}" is unavailable`)
   if (!provider.capabilities.toolFilter) throw new Error(`workflow authoring provider "${route.subagentProvider}" cannot enforce read-only scouting`)
   if (outputSchema !== undefined && !provider.capabilities.outputSchema) throw new Error(`workflow authoring provider "${route.subagentProvider}" cannot produce structured output`)
-  const run = await subagents.start(route.subagentProvider, {
-    label: outputSchema === undefined ? 'workflow-scout' : 'workflow-author',
+  const request = {
     prompt: [{ type: 'text', text: prompt }],
     parent,
-    signal,
     toolFilter: resolveReadOnlyToolFilter(parent, config.readOnlyAllowedTools, config.readOnlyToolFilter.deny),
     agentOptions: {
       ...(route.provider === undefined ? {} : { provider: route.provider }),
@@ -51,6 +49,13 @@ async function oneShot(
       ...(route.maxTokens === undefined ? {} : { maxTokens: route.maxTokens }),
     },
     ...(outputSchema === undefined ? {} : { outputSchema }),
+  }
+  const run = await subagents.startActivation({
+    provider: route.subagentProvider,
+    label: outputSchema === undefined ? 'workflow-scout' : 'workflow-author',
+    request,
+    signal,
+    delivery: 'caller',
   })
   try {
     const result = await run.result
