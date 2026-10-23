@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import { describe, expect, it, vi } from 'vitest'
 import { DynamicWorkflowService, projectPartitionKey } from '../src/service.js'
 import { validateWorkflowManifest } from '../src/capsule.js'
@@ -22,7 +22,7 @@ function config(root: string): ResolvedWorkflowConfig {
 }
 
 function agent(cwd: string): Agent {
-  return { session: { id: 'parent', header: { cwd }, events: [], append: vi.fn() } } as unknown as Agent
+  return { session: { id: 'parent', header: { cwd }, events: [], snapshotEvents: () => [], append: vi.fn() } } as unknown as Agent
 }
 
 function authoredPayload() {
@@ -35,20 +35,20 @@ function authoredPayload() {
 
 function subagents() {
   let sequence = 0
-  const start = vi.fn(async (_provider: string, request: SubagentStartRequest) => {
+  const startActivation = vi.fn(async (spec: { readonly label?: string }) => {
     const index = ++sequence
-    const isScout = request.label === 'workflow-scout'
-    const isAuthor = request.label === 'workflow-author'
+    const isScout = spec.label === 'workflow-scout'
+    const isAuthor = spec.label === 'workflow-author'
     const result = isScout
       ? { output: [{ type: 'text' as const, text: 'facts' }], stopReason: 'completed' as const }
       : isAuthor
         ? { output: [{ type: 'text' as const, text: 'capsule' }], structured: authoredPayload(), stopReason: 'completed' as const }
-        : { output: [{ type: 'text' as const, text: `child:${request.label ?? index}` }], stopReason: 'completed' as const }
-    return { id: `child-${index}`, localAgent: undefined, result: Promise.resolve(result), dispose: vi.fn(async () => {}) }
+        : { output: [{ type: 'text' as const, text: `child:${spec.label ?? index}` }], stopReason: 'completed' as const }
+    return { childId: `child-${index}`, messageId: `message-${index}`, result: Promise.resolve(result), dispose: vi.fn(async () => {}) }
   })
   return {
-    start,
-    value: { getProvider: (name: string) => name === 'spawn' ? { name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false } : undefined, start } as unknown as SubagentRuntime,
+    startActivation,
+    value: { getProvider: (name: string) => name === 'spawn' ? { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } : undefined, startActivation } as unknown as SubagentRuntime,
   }
 }
 
@@ -57,7 +57,10 @@ async function fixture() {
   const fake = subagents()
   const userQuestions = { ask: vi.fn(async () => ({ answers: [{ id: 'workflow-approval', selected: ['Run'] }] })) }
   const jobs = { start: vi.fn(input => { const control = input.run(); void control.done; return 'workflow-1' }) }
-  const service = new DynamicWorkflowService(new Context(), { config: config(root), subagents: fake.value, userQuestions: userQuestions as never, jobs: jobs as never })
+  const service = new DynamicWorkflowService(new Context(), {
+    config: config(root), subagents: fake.value, userQuestions: userQuestions as never, jobs: jobs as never,
+    registerChildPreset: async () => async () => undefined,
+  })
   return { root, fake, userQuestions, jobs, service, agent: agent(root) }
 }
 

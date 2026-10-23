@@ -1,13 +1,14 @@
 import { Context, Service } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs';
+import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval';
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions';
 import { type WorkflowSmokeAdmissionOptions } from './author.js';
 import { type LoadedWorkflow, type WorkflowCatalog } from './catalog.js';
 import { type WorkflowPruneOptions, type WorkflowPruneResult } from './store.js';
-import type { ResolvedWorkflowConfig, WorkflowCapsule, WorkflowModule, WorkflowRun, WorkflowRunSnapshot, WorkflowDispatchAdapter, WorkflowEvent, WorkflowSource, WorkflowVerificationAdapter, WorktreeIsolationAdapter } from './types.js';
+import type { ResolvedWorkflowConfig, WorkflowCapsule, WorkflowChildToolScope, WorkflowModule, WorkflowRun, WorkflowRunSnapshot, WorkflowDispatchAdapter, WorkflowEvent, WorkflowSource, WorkflowVerificationAdapter, WorktreeIsolationAdapter } from './types.js';
 declare module '@deepseek-ai/cordis' {
     interface Context {
         dynamicWorkflows: DynamicWorkflowService;
@@ -27,6 +28,10 @@ export interface DynamicWorkflowServiceOptions {
     readonly verification?: WorkflowVerificationAdapter;
     readonly isolation?: WorktreeIsolationAdapter;
     readonly dispatch?: WorkflowDispatchAdapter;
+    /** 0.2.1: resolves a live child Agent from the host registry after activation. */
+    readonly resolveLiveAgent?: (childId: SessionId) => Agent | undefined;
+    /** S+R (02b): dynamic preset registration against the host agent-presets service. */
+    readonly registerChildPreset?: WorkflowChildToolScope['registerPreset'];
 }
 export declare function projectPartitionKey(cwd: string): string;
 export declare class DynamicWorkflowService extends Service {
@@ -37,11 +42,15 @@ export declare class DynamicWorkflowService extends Service {
     private isolation;
     private readonly deploymentSemaphore;
     private dispatch;
+    private readonly childToolRoster;
+    private readonly childToolScope;
     constructor(ctx: Context, options: DynamicWorkflowServiceOptions);
     registerVerificationAdapter(adapter: WorkflowVerificationAdapter): () => void;
     registerIsolationAdapter(adapter: WorktreeIsolationAdapter): () => void;
     registerDispatchAdapter(adapter: WorkflowDispatchAdapter): () => void;
     taskAdmissionServices(agent: Agent): WorkflowSmokeAdmissionOptions;
+    /** Authoring composes read-only scouting children; without the S+R services it fails loud. */
+    private requireChildToolScope;
     list(agent: Agent): Promise<WorkflowCatalog>;
     load(agent: Agent, name: string, trusted?: boolean): Promise<LoadedWorkflow>;
     startNamed(agent: Agent, name: string, args?: unknown, signal?: AbortSignal, approvalGranted?: boolean): Promise<WorkflowRun>;

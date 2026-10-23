@@ -13,7 +13,7 @@
     "sourceMap": false,
     "rootDir": "src",
     "outDir": "lib",
-    "skipLibCheck": false
+    "skipLibCheck": true
   },
   "include": ["src/**/*.ts"]
 }

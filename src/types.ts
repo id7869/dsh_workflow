@@ -1,4 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentActivation, SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import type { ObjectJsonSchema, ToolRestriction } from '@deepseek-ai/dsh-tools'
 
@@ -426,9 +427,32 @@ export interface WorkflowActivationSpec {
   readonly request: Omit<SubagentStartRequest, 'label' | 'signal'>
   readonly signal: AbortSignal
   readonly delivery: 'caller'
+  /**
+   * Reserved identity for a local child. Used by read-only and repair tasks to
+   * pre-register the child in the tool-scope roster before activation so the
+   * agent/created listener can apply the name-level restrict before the first
+   * prompt. Requires a provider with a local backend (spawn-in-process).
+   */
+  readonly childId?: SessionId
 }
 
-/** Deployment seam for KodaX target-agent dispatch and provider-specific effort controls. */
+/**
+ * S+R child tool scoping services (02b §2.2): dynamic per-run preset
+ * registration plus the roster backing the agent/created restrict injection.
+ * Read-only and repair tasks fail loud when the host provides none.
+ */
+export interface WorkflowChildToolScope {
+  readonly registerPreset: (rows: readonly { readonly name: string }[]) => Promise<() => Promise<void>>
+  readonly reserveChild: (childId: SessionId, allow: readonly string[]) => void
+  readonly releaseChild: (childId: SessionId) => void
+}
+
+/**
+ * Deployment seam for KodaX target-agent dispatch and provider-specific effort
+ * controls. Deployments that register a dispatch adapter own the read-only
+ * tool scoping of their routed tasks: the S+R roster and restrict injection
+ * only cover local activations started through this plugin directly.
+ */
 export interface WorkflowDispatchAdapter {
   start(input: {
     readonly target?: WorkflowSpawnAgentInput['target']

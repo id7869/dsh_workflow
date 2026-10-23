@@ -1,13 +1,15 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
+import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { createWorkflowCapsule, validateWorkflowArgs, validateWorkflowCapsule } from './capsule.js'
+import { readOnlyPackageRows } from './child-composition.js'
 import { WorkflowControlError, resolveReadOnlyToolFilter, validateWorkflowTaskAdmission } from './engine.js'
 import { assertRestrictedWorkflowQuality, lintRestrictedWorkflowSource, validateRestrictedWorkflowSource } from './source-policy.js'
 import { runRestrictedWorkflowScript } from './runtime.js'
-import { WORKFLOW_INTERNAL, type ModelTierRoute, type ResolvedWorkflowConfig, type WorkflowApi, type WorkflowCapsule, type WorkflowModule, type WorkflowSpawnAgentInput, type WorkflowTaskResult } from './types.js'
+import { WORKFLOW_INTERNAL, type ModelTierRoute, type ResolvedWorkflowConfig, type WorkflowApi, type WorkflowCapsule, type WorkflowChildToolScope, type WorkflowModule, type WorkflowSpawnAgentInput, type WorkflowTaskResult } from './types.js'
 
 const AUTHOR_SCHEMA: ObjectJsonSchema = {
   type: 'object',
@@ -33,16 +35,25 @@ async function oneShot(
   prompt: string,
   signal: AbortSignal,
   config: ResolvedWorkflowConfig,
+  childTools: WorkflowChildToolScope,
   outputSchema?: ObjectJsonSchema,
 ): Promise<{ readonly text: string; readonly structured?: unknown }> {
   const provider = subagents.getProvider(route.subagentProvider)
   if (provider === undefined) throw new Error(`workflow authoring provider "${route.subagentProvider}" is unavailable`)
-  if (!provider.capabilities.toolFilter) throw new Error(`workflow authoring provider "${route.subagentProvider}" cannot enforce read-only scouting`)
+  if (!provider.capabilities.agentPreset) throw new Error(`workflow authoring provider "${route.subagentProvider}" cannot compose an independent read-only tool set`)
   if (outputSchema !== undefined && !provider.capabilities.outputSchema) throw new Error(`workflow authoring provider "${route.subagentProvider}" cannot produce structured output`)
-  const request = {
+  // S+R (02b): the scout/author child composes a dynamic read-only preset and
+  // a roster-backed restrict, both derived from the parent-intersected list.
+  const allow = resolveReadOnlyToolFilter(parent, config.readOnlyAllowedTools, config.readOnlyToolFilter.deny).allow ?? []
+  const plan = readOnlyPackageRows(allow)
+  const presetId = `dsh-external-workflow-scout-${randomUUID().slice(0, 8)}`
+  const unregister = await childTools.registerPreset(plan.rows)
+  const childId = SessionId(`dsh-external-workflow-child-${randomUUID()}`)
+  childTools.reserveChild(childId, allow)
+  const request: Omit<SubagentStartRequest, 'label' | 'signal'> = {
     prompt: [{ type: 'text', text: prompt }],
     parent,
-    toolFilter: resolveReadOnlyToolFilter(parent, config.readOnlyAllowedTools, config.readOnlyToolFilter.deny),
+    agentPreset: presetId,
     agentOptions: {
       ...(route.provider === undefined ? {} : { provider: route.provider }),
       ...(route.model === undefined ? {} : { model: route.model }),
@@ -55,13 +66,18 @@ async function oneShot(
     label: outputSchema === undefined ? 'workflow-scout' : 'workflow-author',
     request,
     signal,
+    childId,
     delivery: 'caller',
   })
   try {
     const result = await run.result
     if (result.stopReason !== 'completed') throw new Error(`workflow authoring child ${result.stopReason}`)
     return { text: text(result.output), ...(result.structured === undefined ? {} : { structured: result.structured }) }
-  } finally { await run.dispose() }
+  } finally {
+    try { await unregister() } catch { /* preset cleanup must not mask the authoring outcome */ }
+    childTools.releaseChild(childId)
+    await run.dispose()
+  }
 }
 
 function authorPrompt(request: string, scout: string, existing?: WorkflowCapsule, change?: string): string {
@@ -342,6 +358,7 @@ export async function authorWorkflowCapsule(input: {
   readonly subagents: SubagentRuntime
   readonly config: ResolvedWorkflowConfig
   readonly signal: AbortSignal
+  readonly childTools: WorkflowChildToolScope
   readonly existing?: WorkflowCapsule
   readonly change?: string
   readonly fromRunId?: string
@@ -356,6 +373,7 @@ export async function authorWorkflowCapsule(input: {
     `Scout the current workspace read-only for facts needed to design this reusable multi-agent workflow. Identify scope, available tools, risks, parallel seams, and verification needs. Do not implement it.\n\n${input.request}`,
     input.signal,
     input.config,
+    input.childTools,
   )
   let priorError = ''
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -366,6 +384,7 @@ export async function authorWorkflowCapsule(input: {
       `${authorPrompt(input.request, scout.text, input.existing, input.change)}${priorError.length === 0 ? '' : `\n\nRepair this validation failure from the prior attempt:\n${priorError}`}`,
       input.signal,
       input.config,
+      input.childTools,
       AUTHOR_SCHEMA,
     )
     try {

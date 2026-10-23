@@ -1,6 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
-import { type ResolvedWorkflowConfig, type WorkflowCapsule, type WorkflowModule } from './types.js';
+import { type ResolvedWorkflowConfig, type WorkflowCapsule, type WorkflowChildToolScope, type WorkflowModule } from './types.js';
 export interface WorkflowSmokeAdmissionOptions {
     readonly subagents?: Pick<SubagentRuntime, 'getProvider'>;
     readonly dispatchAvailable?: boolean;
@@ -17,6 +17,7 @@ export declare function authorWorkflowCapsule(input: {
     readonly subagents: SubagentRuntime;
     readonly config: ResolvedWorkflowConfig;
     readonly signal: AbortSignal;
+    readonly childTools: WorkflowChildToolScope;
     readonly existing?: WorkflowCapsule;
     readonly change?: string;
     readonly fromRunId?: string;

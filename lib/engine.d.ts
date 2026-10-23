@@ -1,9 +1,18 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import { type ContextFormed } from '@deepseek-ai/dsh-llm';
+import { SessionId } from '@deepseek-ai/dsh-session';
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { type ToolRestriction } from '@deepseek-ai/dsh-tools';
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval';
 import { WorkflowRunStore } from './store.js';
-import type { ResolvedWorkflowConfig, WorkflowCapsule, WorkflowEvent, WorkflowModelHint, WorkflowPreflightResult, WorkflowRun, WorkflowManifest, WorkflowRunSnapshot, WorkflowSpawnAgentInput, WorkflowStartInput, WorkflowVerificationAdapter, WorktreeIsolationAdapter, WorkflowDispatchAdapter } from './types.js';
+import type { ResolvedWorkflowConfig, WorkflowCapsule, WorkflowEvent, WorkflowModelHint, WorkflowPreflightResult, WorkflowRun, WorkflowManifest, WorkflowRunSnapshot, WorkflowSpawnAgentInput, WorkflowStartInput, WorkflowVerificationAdapter, WorktreeIsolationAdapter, WorkflowDispatchAdapter, WorkflowChildToolScope } from './types.js';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'dsh-external-workflow': {
+            kind: 'dsh-external-workflow';
+        } & ContextFormed;
+    }
+}
 export interface WorkflowEngineDependencies {
     readonly subagents: SubagentRuntime;
     readonly config: ResolvedWorkflowConfig;
@@ -14,6 +23,10 @@ export interface WorkflowEngineDependencies {
     readonly isolation?: WorktreeIsolationAdapter;
     readonly dispatch?: WorkflowDispatchAdapter;
     readonly deploymentSemaphore?: WorkflowSemaphore;
+    /** 0.2.1: local children are live Agents in the registry; resolve once after activation. */
+    readonly resolveLiveAgent?: (childId: SessionId) => Agent | undefined;
+    /** S+R child tool scoping (02b): dynamic preset rows + restrict roster; read-only and repair tasks fail loud without it. */
+    readonly childTools?: WorkflowChildToolScope;
     readonly now?: () => number;
     readonly id?: () => string;
     readonly resolveNested: (name: string) => Promise<{
