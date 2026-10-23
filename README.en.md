@@ -62,11 +62,11 @@ See the [complete parity contract](docs/KODAX_PARITY.md) for the evidence-backed
 
 Generated scripts run in a separate QuickJS WebAssembly heap. The host exposes only a JSON capability bridge; imports, process/filesystem/shell/network access, timers, nondeterministic clock/randomness, and non-JSON boundary values are rejected. CPU slices, wall time, memory, and stack are bounded, and wall timeout closes the bridge and aborts the run.
 
-Read-only execution dynamically intersects the parent Agent's visible catalog with a trusted allow-list, so unknown or newly added mutation tools are excluded by default. Read evidence, successful mutation-tool plus Git-workspace change evidence, required changed paths, final-text checks, and bounded same-actor repair are built in. Deployments can add non-Git workspace evidence, worktrees, and target/effort dispatch through public adapter registrations; unsupported requests fail loudly.
+Read-only execution dynamically intersects the parent Agent's visible catalog with a trusted allow-list, so unknown or newly added mutation tools are excluded by default: read-only children compose a per-task agent preset derived from that list, and an agent/created listener injects the same-strength tool restrict before the first prompt. Read evidence, successful mutation-tool plus Git-workspace change evidence, required changed paths, final-text checks, and bounded same-actor repair are built in. Deployments can add non-Git workspace evidence, worktrees, and target/effort dispatch through public adapter registrations; unsupported requests fail loudly.
 
 ## Development
 
-Keep the compatible DSH checkout at `../test-icetomoyo` or set `DSH_SNAPSHOT_DIR`.
+The compatibility baseline is the local DSH desktop install (app.asar runtime fingerprint plus official npm artifact assertions); no source snapshot checkout is required. The standard install path resolves automatically, or set `DSH_ASAR_PATH` to point elsewhere.
 
 ```sh
 pnpm install
@@ -75,7 +75,7 @@ pnpm test:coverage
 pnpm pack
 ```
 
-The suite currently contains 179 tests and enforces 80% global statement, branch, function, and line coverage thresholds.
+The suite currently contains 179 tests and enforces 80% global statement, branch, function, and line coverage thresholds. The compatibility target is recorded in [`compatibility.json`](compatibility.json); after a DSH upgrade, `pnpm run check:compatibility` fails by design — realign that file before releasing again.
 
 ## Known limitations
 

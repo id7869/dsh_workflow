@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Compatibility target upgraded to DSH `0.2.1-rc.2` (desktop build `332895e0`): all `@deepseek-ai/*` peers and dev dependencies pinned to the exact runtime versions.
+- Task spawning migrated to the 0.2.1 `subagents.startActivation` contract (`delivery: 'caller'`); live child Agents resolve from the host agents registry, and message sources declare a dedicated `dsh-external-workflow` kind.
+- Read-only child tooling now composes a per-task agent preset derived from the parent-intersected allow-list and injects an equal-strength tool restrict before the child's first prompt (provider `agentPreset` capability gate; fail-loud preserved). Structured-output repair children compose an empty tool composition.
+- The reference mechanism no longer needs a source snapshot checkout: `check:compatibility` verifies the local app.asar runtime fingerprint plus official npm artifact structure assertions (event vocabulary, render consumption, type artifacts), with tamper detection on both scripts. `DSH_ASAR_PATH` overrides the standard install path.
+- Session event reads migrated to `snapshotEvents()`; tool/result evidence reads the 0.2.1 message-level `toolCallId`/`isError`; `commands.execute` gained the submitted-attachments argument; background-job owners are session ids.
+- `skipLibCheck` enabled: official npm artifact declarations are no longer full-file checked (one shipped d.ts is internally inconsistent); plugin-own resolution and usage checking is unchanged.
+
 ---
 
 ## [0.1.2] - 2026-08-13

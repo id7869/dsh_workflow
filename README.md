@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-  <img alt="DSH 0.0.1-rc.2" src="https://img.shields.io/badge/DSH-0.0.1--rc.2-8257D0.svg">
+  <img alt="DSH 0.2.1-rc.2" src="https://img.shields.io/badge/DSH-0.2.1--rc.2-8257D0.svg">
   <img alt="Tests 179" src="https://img.shields.io/badge/tests-179%20passing-brightgreen.svg">
   <img alt="KodaX workflow parity" src="https://img.shields.io/badge/workflow-KodaX%20parity-0A84FF.svg">
 </p>
@@ -199,7 +199,7 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
 - 生成型脚本只能通过冻结的 WorkflowApi 发起 effect；脚本结果、参数和 RPC 值必须可 JSON 序列化。
 - 生成脚本运行在 QuickJS WebAssembly 独立堆中；宿主只暴露 JSON capability RPC。静态 policy 还会拒绝 import/require、process、文件、shell、网络、timer 与非确定性 API。
 - 同步执行、总墙钟、WASM 内存与栈都有上限；主函数返回或墙钟超时时会关闭 RPC、abort run，并等待所有已接收的宿主 RPC 与已发布 child 静默退出。可信本地模块仍具有宿主权限。
-- `readOnly: true` 使用“当前父 Agent 可见工具 ∩ 可信只读 allow-list”，未来新增写工具默认不可见；provider 不支持 `toolFilter` 时直接失败。
+- `readOnly: true` 使用“当前父 Agent 可见工具 ∩ 可信只读 allow-list”：只读子 Agent 在任务启动时组合一个派生自该名单的动态 agent preset，并由 agent/created 监听器在首个 prompt 前注入同等强度的工具 restrict；未来新增写工具默认不可见；provider 不支持独立组合（`agentPreset`）时直接失败。
 - token budget 在子 Agent 发布前预留，本地 Agent 有 usage 时按 Session 实际值核算。
 - read-path、成功 mutation tool + Git workspace 指纹变化、每个 required changed path 的前后内容指纹、final-text 与 bounded same-actor repair 已内建；部署可以用带稳定 `cacheIdentity` 的 `registerVerificationAdapter()` 叠加非 Git 或更强的 workspace 证据。worktree 通过 `registerIsolationAdapter()` 接入，未注册时明确失败。
 - catalog 保存/替换/改名/删除使用规范化根目录、逐段 junction/symlink 拒绝与原子独占发布；并发同名保存不会互相覆盖。
@@ -209,16 +209,16 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
 
 ## 开发与验证
 
-仓库旁需有兼容 DSH checkout，默认路径为 `../test-icetomoyo`，也可设置 `DSH_SNAPSHOT_DIR`。
+兼容基线是本机 DSH 桌面安装（`app.asar` 运行时指纹 + 官方 npm 产物结构断言），不再依赖任何源码快照仓库。标准安装路径自动解析，也可设置 `DSH_ASAR_PATH` 指定其他 asar。
 
 ```sh
 pnpm install
-pnpm check           # 快照 pin + 真实 DSH 投影 + 179 tests + typecheck + build
+pnpm check           # asar 指纹 pin + tool-workflow 投影断言 + 179 tests + typecheck + build
 pnpm test:coverage   # 语句/分支/函数/行全局阈值均为 80%
 pnpm pack
 ```
 
-兼容基线、commit 和验证时间记录在 [`compatibility.json`](compatibility.json)。发布前必须重新 fetch DSH 默认分支并更新此文件。
+兼容目标版本、build commit 与验证时间记录在 [`compatibility.json`](compatibility.json)。DSH 升级后 `pnpm run check:compatibility` 会按设计失败——请先重新对齐该文件再发布。
 
 ## 已知限制
 
