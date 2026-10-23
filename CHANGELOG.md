@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Version metadata now derives from the shipped manifests instead of stale literals: `pluginVersion` reads the package version and `dshVersion` reads the recorded compatibility target, so capsule provenance, run runtime metadata, and the capsule `minDshVersion` gate can no longer drift below the real values. A guard spec pins both against `package.json` and `compatibility.json`.
 - Read-only package rows now carry explicit plugin config for packages whose schema requires it: `dsh-tool-fs-search` declares `sampleOverCapGlobResults` required with no fallback (official tool-catalog value `true`), so a bare row failed every child at the composition mount. Row type gained an optional `config` field; test doubles mirror the mount validation, and an engine spec with a glob/grep-capable parent exercises the fs-search row end to end.
 - Dynamic child presets are now registered under the exact id the activation request references as `agentPreset`. The id was previously minted per request while the registration site used a random name, so every read-only and repair child failed at spawn with `Unknown agent preset`. Test doubles now mirror the runtime preset-registry validation (an unregistered `agentPreset` fails the activation stub), and the read-only name→package mapping and child roster gained a dedicated unit spec.
 - `check:compatibility` fails with a one-line diagnostic (exit 1) when the asar archive or `DSH_ASAR_PATH` target cannot be opened, instead of an uncaught stack trace.
