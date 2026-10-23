@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -120,6 +121,22 @@ function tier(subagentProvider: string, provider: string, model: string, maxToke
   return { subagentProvider, ...(provider.length === 0 ? {} : { provider }), ...(model.length === 0 ? {} : { model }), maxTokens }
 }
 
+// Version metadata derives from the shipped manifests so capsule provenance,
+// run runtime metadata, and the capsule minDshVersion gate never drift from
+// the package version or the recorded compatibility target (E6 缺陷 #5).
+function ownPackageVersion(): string {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }
+  if (pkg.version === undefined || pkg.version === '') throw new Error('workflow plugin package.json declares no version')
+  return pkg.version
+}
+
+function compatibilityTargetVersion(): string {
+  const compatibility = JSON.parse(readFileSync(new URL('../compatibility.json', import.meta.url), 'utf8')) as { target?: { version?: string } }
+  const version = compatibility.target?.version
+  if (version === undefined || version === '') throw new Error('workflow plugin compatibility.json declares no target version')
+  return version
+}
+
 function resolveConfig(config: Config): ResolvedPluginConfig {
   return {
     projectDirectory: config.projectDirectory ?? '.dsh/workflows',
@@ -149,8 +166,8 @@ function resolveConfig(config: Config): ResolvedPluginConfig {
     availableMcp: [...(config.availableMcp ?? [])],
     availableSkills: [...(config.availableSkills ?? [])],
     maxRetainedRuns: config.maxRetainedRuns ?? 500,
-    pluginVersion: '0.1.2',
-    dshVersion: '0.0.1-rc.2',
+    pluginVersion: ownPackageVersion(),
+    dshVersion: compatibilityTargetVersion(),
   }
 }
 

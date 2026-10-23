@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -164,11 +165,22 @@ describe('Cordis plugin entrypoint', () => {
     }, true)
     expect(fx.tools.map(tool => tool.name)).toEqual(['flows', 'execute_flow', 'manage_flow'])
     const options = fx.ctx.plugin.mock.calls[0]?.[1] as Record<string, unknown>
-    expect(options).toMatchObject({ config: { projectDirectory: 'project', pluginVersion: '0.1.2', modelTiers: { fast: { subagentProvider: 'fast-p', provider: 'fast-llm', model: 'fast-m', maxTokens: 16 } }, readOnlyToolFilter: { deny: ['danger'] } }, approval: { service: 'approval' }, jobs: { service: 'jobs' }, userQuestions: { service: 'userQuestions' } })
+    expect(options).toMatchObject({ config: { projectDirectory: 'project', modelTiers: { fast: { subagentProvider: 'fast-p', provider: 'fast-llm', model: 'fast-m', maxTokens: 16 } }, readOnlyToolFilter: { deny: ['danger'] } }, approval: { service: 'approval' }, jobs: { service: 'jobs' }, userQuestions: { service: 'userQuestions' } })
     expect(fx.tools[0]!.output.render({}, { ok: true })).toEqual([{ type: 'text', text: '{\n  "ok": true\n}' }])
     await expect(fx.tools[0]!.execute({}, { signal: exec.signal })).rejects.toThrow(/requires a calling DSH agent/u)
     ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
     expect(await fx.tools[1]!.execute({ name: 'known', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+  })
+
+  it('pins plugin and DSH version metadata to the package manifest and compatibility target', () => {
+    // E6 缺陷 #5: stale version literals flowed into capsule provenance, run
+    // runtime metadata, and the capsule minDshVersion gate.
+    const fx = fixture()
+    const options = fx.ctx.plugin.mock.calls[0]?.[1] as { config?: { pluginVersion?: string; dshVersion?: string } }
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }
+    const compatibility = JSON.parse(readFileSync(new URL('../compatibility.json', import.meta.url), 'utf8')) as { target?: { version?: string } }
+    expect(options.config?.pluginVersion).toBe(pkg.version)
+    expect(options.config?.dshVersion).toBe(compatibility.target?.version)
   })
 
   it('executes named, authored, inline, and background workflow tool modes', async () => {
