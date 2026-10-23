@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <img alt="DSH 0.2.1-rc.2" src="https://img.shields.io/badge/DSH-0.2.1--rc.2-8257D0.svg">
-  <img alt="Tests 184" src="https://img.shields.io/badge/tests-184%20passing-brightgreen.svg">
+  <img alt="Tests 186" src="https://img.shields.io/badge/tests-186%20passing-brightgreen.svg">
   <img alt="KodaX workflow parity" src="https://img.shields.io/badge/workflow-KodaX%20parity-0A84FF.svg">
 </p>
 
@@ -215,7 +215,7 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
 
 ```sh
 pnpm install
-pnpm check           # asar 指纹 pin + tool-workflow 投影断言 + 184 tests + typecheck + build
+pnpm check           # asar 指纹 pin + tool-workflow 投影断言 + 186 tests + typecheck + build
 pnpm test:coverage   # 语句/分支/函数/行全局阈值均为 80%
 pnpm pack
 ```

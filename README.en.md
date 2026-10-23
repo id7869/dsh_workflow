@@ -77,7 +77,7 @@ pnpm test:coverage
 pnpm pack
 ```
 
-The suite currently contains 184 tests and enforces 80% global statement, branch, function, and line coverage thresholds. The compatibility target is recorded in [`compatibility.json`](compatibility.json); after a DSH upgrade, `pnpm run check:compatibility` fails by design — realign that file before releasing again.
+The suite currently contains 186 tests and enforces 80% global statement, branch, function, and line coverage thresholds. The compatibility target is recorded in [`compatibility.json`](compatibility.json); after a DSH upgrade, `pnpm run check:compatibility` fails by design — realign that file before releasing again.
 
 ## Known limitations
 
