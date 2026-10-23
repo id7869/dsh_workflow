@@ -62,7 +62,13 @@ function fail(mismatches) {
   process.exit(1)
 }
 
-const asar = openAsar(resolveAsarPath())
+let asar
+try {
+  asar = openAsar(resolveAsarPath())
+} catch (error) {
+  const detail = error instanceof Error ? (error.code ?? error.message) : String(error)
+  fail([['asar open', `cannot open the asar archive (${detail}); set DSH_ASAR_PATH to the installed app.asar`]])
+}
 try {
   const mismatches = []
   const manifest = asar.readText(compatibility.target.runtimeManifest)
