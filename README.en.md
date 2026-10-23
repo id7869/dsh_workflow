@@ -28,6 +28,8 @@ dsh plugin --profile web add "github:dsh-external/dsh_workflow#main"
 dsh --profile web --dump-config
 ```
 
+> First-time installs from non-registry forms (git source, tarball, `file:` path) hit the build-approval gate of the DSH-bundled pnpm fork (`[ERR_PNPM_IGNORED_BUILDS]`, exit 1 — even though this package ships no install scripts). Copy the exact `allowBuilds` key printed in that error into the profile's `pnpm-workspace.yaml` (for example `~/.dsh/profiles/web/pnpm-workspace.yaml`) and re-run the install command. The key follows the install spec; a `file:` install uses `'@dsh-external/workflow@file:<tarball path>'`.
+
 Restart the profile, then try:
 
 ```text
@@ -75,7 +77,7 @@ pnpm test:coverage
 pnpm pack
 ```
 
-The suite currently contains 179 tests and enforces 80% global statement, branch, function, and line coverage thresholds. The compatibility target is recorded in [`compatibility.json`](compatibility.json); after a DSH upgrade, `pnpm run check:compatibility` fails by design — realign that file before releasing again.
+The suite currently contains 184 tests and enforces 80% global statement, branch, function, and line coverage thresholds. The compatibility target is recorded in [`compatibility.json`](compatibility.json); after a DSH upgrade, `pnpm run check:compatibility` fails by design — realign that file before releasing again.
 
 ## Known limitations
 

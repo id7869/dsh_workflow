@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Dynamic child presets are now registered under the exact id the activation request references as `agentPreset`. The id was previously minted per request while the registration site used a random name, so every read-only and repair child failed at spawn with `Unknown agent preset`. Test doubles now mirror the runtime preset-registry validation (an unregistered `agentPreset` fails the activation stub), and the read-only name→package mapping and child roster gained a dedicated unit spec.
+- `check:compatibility` fails with a one-line diagnostic (exit 1) when the asar archive or `DSH_ASAR_PATH` target cannot be opened, instead of an uncaught stack trace.
+- Documented the DSH-bundled pnpm fork's `allowBuilds` prerequisite for non-registry installs (git, tarball, `file:`) in both READMEs.
+
 ### Changed
 
 - Compatibility target upgraded to DSH `0.2.1-rc.2` (desktop build `332895e0`): all `@deepseek-ai/*` peers and dev dependencies pinned to the exact runtime versions.

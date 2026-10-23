@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
   <img alt="DSH 0.2.1-rc.2" src="https://img.shields.io/badge/DSH-0.2.1--rc.2-8257D0.svg">
-  <img alt="Tests 179" src="https://img.shields.io/badge/tests-179%20passing-brightgreen.svg">
+  <img alt="Tests 184" src="https://img.shields.io/badge/tests-184%20passing-brightgreen.svg">
   <img alt="KodaX workflow parity" src="https://img.shields.io/badge/workflow-KodaX%20parity-0A84FF.svg">
 </p>
 
@@ -62,6 +62,8 @@ dsh plugin --profile web add "github:dsh-external/dsh_workflow#main"
 # 验证 bundle 已进入 profile 合成树
 dsh --profile web --dump-config
 ```
+
+> 非 registry 形态（git 源、tarball、`file:` 路径）的首次安装会被 DSH 自带 pnpm fork 的构建审批门拦下（`[ERR_PNPM_IGNORED_BUILDS]`，exit 1——即使本包没有安装脚本）。把错误消息中给出的 `allowBuilds` 键照抄进对应 profile 的 `pnpm-workspace.yaml`（例如 `~/.dsh/profiles/web/pnpm-workspace.yaml`）后重跑安装命令即可。键形随安装形态变化，例如 `file:` 安装为 `'@dsh-external/workflow@file:<tarball 路径>'`。
 
 预期配置中出现：
 
@@ -213,7 +215,7 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
 
 ```sh
 pnpm install
-pnpm check           # asar 指纹 pin + tool-workflow 投影断言 + 179 tests + typecheck + build
+pnpm check           # asar 指纹 pin + tool-workflow 投影断言 + 184 tests + typecheck + build
 pnpm test:coverage   # 语句/分支/函数/行全局阈值均为 80%
 pnpm pack
 ```
