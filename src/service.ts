@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -13,10 +14,11 @@ import {
   deleteSavedWorkflow, discoverWorkflowCatalog, loadWorkflowByName, renameSavedWorkflow, saveWorkflowCapsule,
   type LoadedWorkflow, type WorkflowCatalog, type WorkflowCatalogOptions,
 } from './catalog.js'
+import { ChildToolRoster } from './child-composition.js'
 import { DynamicWorkflowEngine, WorkflowSemaphore, snapshotCapsule } from './engine.js'
 import { WorkflowRunStore, type WorkflowPruneOptions, type WorkflowPruneResult } from './store.js'
 import type {
-  ResolvedWorkflowConfig, WorkflowCapsule, WorkflowModule, WorkflowRun, WorkflowRunSnapshot,
+  ResolvedWorkflowConfig, WorkflowCapsule, WorkflowChildToolScope, WorkflowModule, WorkflowRun, WorkflowRunSnapshot,
   WorkflowDispatchAdapter, WorkflowEvent, WorkflowSource, WorkflowVerificationAdapter, WorktreeIsolationAdapter,
 } from './types.js'
 
@@ -41,6 +43,10 @@ export interface DynamicWorkflowServiceOptions {
   readonly verification?: WorkflowVerificationAdapter
   readonly isolation?: WorktreeIsolationAdapter
   readonly dispatch?: WorkflowDispatchAdapter
+  /** 0.2.1: resolves a live child Agent from the host registry after activation. */
+  readonly resolveLiveAgent?: (childId: SessionId) => Agent | undefined
+  /** S+R (02b): dynamic preset registration against the host agent-presets service. */
+  readonly registerChildPreset?: WorkflowChildToolScope['registerPreset']
 }
 
 function canonicalProjectDirectory(cwd: string): string {
@@ -69,6 +75,8 @@ export class DynamicWorkflowService extends Service {
   private isolation: WorktreeIsolationAdapter | undefined
   private readonly deploymentSemaphore: WorkflowSemaphore
   private dispatch: WorkflowDispatchAdapter | undefined
+  private readonly childToolRoster = new ChildToolRoster()
+  private readonly childToolScope: WorkflowChildToolScope | undefined
 
   constructor(ctx: Context, private readonly options: DynamicWorkflowServiceOptions) {
     super(ctx, 'dynamicWorkflows')
@@ -76,6 +84,21 @@ export class DynamicWorkflowService extends Service {
     this.isolation = options.isolation
     this.deploymentSemaphore = new WorkflowSemaphore(options.config.maxConcurrency)
     this.dispatch = options.dispatch
+    const roster = this.childToolRoster
+    this.childToolScope = options.registerChildPreset === undefined ? undefined : {
+      registerPreset: options.registerChildPreset,
+      reserveChild: (childId, allow) => roster.reserve(childId, allow),
+      releaseChild: childId => roster.release(childId),
+    }
+    // S+R (02b): serial agent/created listener — AgentLoop holds queued input
+    // until it settles, so the name-level restrict lands before the child's
+    // first prompt. Roster misses are ordinary agents and stay untouched.
+    const disposeRosterListener = ctx.on('agent/created', payload => {
+      const allow = roster.lookup(payload.agent.id)
+      if (allow !== undefined) payload.agent.ctx.tools.restrict({ allow: [...allow] })
+      return undefined
+    })
+    ctx.effect(() => () => { disposeRosterListener() }, 'dynamic-workflows: child tool roster listener')
     ctx.effect(() => async () => { await this.disposeAll() }, 'dynamic-workflows: stop active runs')
   }
 
@@ -109,6 +132,12 @@ export class DynamicWorkflowService extends Service {
     }
   }
 
+  /** Authoring composes read-only scouting children; without the S+R services it fails loud. */
+  private requireChildToolScope(): WorkflowChildToolScope {
+    if (this.childToolScope === undefined) throw new Error('workflow authoring requires the agent-presets service for read-only scouting')
+    return this.childToolScope
+  }
+
   async list(agent: Agent): Promise<WorkflowCatalog> {
     return await discoverWorkflowCatalog(this.catalogOptions(agent))
   }
@@ -139,7 +168,7 @@ export class DynamicWorkflowService extends Service {
   }
 
   async create(agent: Agent, request: string, signal: AbortSignal, save?: { readonly scope: 'project' | 'personal'; readonly replace?: boolean }): Promise<{ readonly capsule: WorkflowCapsule; readonly warnings: readonly string[]; readonly path?: string }> {
-    const authored = await authorWorkflowCapsule({ request, parent: agent, subagents: this.options.subagents, config: this.options.config, signal })
+    const authored = await authorWorkflowCapsule({ request, parent: agent, subagents: this.options.subagents, config: this.options.config, signal, childTools: this.requireChildToolScope() })
     let path: string | undefined
     if (save !== undefined) path = await saveWorkflowCapsule(this.catalogDirectory(agent, save.scope), authored.capsule.manifest.name, authored.capsule, save.replace)
     return { ...authored, ...(path === undefined ? {} : { path }) }
@@ -165,7 +194,7 @@ export class DynamicWorkflowService extends Service {
       fromRunId = identity.runId
     }
     if (capsule === undefined) throw new Error('revise requires a generated workflow capsule')
-    const authored = await authorWorkflowCapsule({ request: capsule.intent?.originalRequest ?? capsule.manifest.description, parent: agent, subagents: this.options.subagents, config: this.options.config, signal, existing: capsule, change, ...(fromRunId === undefined ? {} : { fromRunId }) })
+    const authored = await authorWorkflowCapsule({ request: capsule.intent?.originalRequest ?? capsule.manifest.description, parent: agent, subagents: this.options.subagents, config: this.options.config, signal, childTools: this.requireChildToolScope(), existing: capsule, change, ...(fromRunId === undefined ? {} : { fromRunId }) })
     const directory = this.catalogDirectory(agent, scope)
     const path = await saveWorkflowCapsule(directory, authored.capsule.manifest.name, authored.capsule, replace)
     return { ...authored, path }
@@ -246,7 +275,7 @@ export class DynamicWorkflowService extends Service {
     if (jobs === undefined) return undefined
     try {
       return jobs.start({
-        kind: 'workflow', label: run.getSnapshot().workflow, owner: agent,
+        kind: 'workflow', label: run.getSnapshot().workflow, owner: agent.id,
         run: () => ({
           cancel: reason => { this.stop(agent, run.runId, reason) },
           done: run.done.then(snapshot => ({
@@ -289,6 +318,8 @@ export class DynamicWorkflowService extends Service {
       ...(this.verification === undefined ? {} : { verification: this.verification }),
       ...(this.isolation === undefined ? {} : { isolation: this.isolation }),
       ...(this.dispatch === undefined ? {} : { dispatch: this.dispatch }),
+      ...(this.options.resolveLiveAgent === undefined ? {} : { resolveLiveAgent: this.options.resolveLiveAgent }),
+      ...(this.childToolScope === undefined ? {} : { childTools: this.childToolScope }),
       deploymentSemaphore: this.deploymentSemaphore,
       resolveNested: async name => {
         const loaded = await this.load(agent, name)

@@ -1,5 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { SubagentRun, SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent';
+import type { SessionId } from '@deepseek-ai/dsh-session';
+import type { SubagentActivation, SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent';
 import type { ObjectJsonSchema, ToolRestriction } from '@deepseek-ai/dsh-tools';
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | {
@@ -402,15 +403,59 @@ export interface WorktreeIsolationAdapter {
         dispose(): Promise<void>;
     }>;
 }
-/** Deployment seam for KodaX target-agent dispatch and provider-specific effort controls. */
+/** Activation spec shape handed to `subagents.startActivation` by this plugin. */
+export interface WorkflowActivationSpec {
+    readonly provider: string;
+    readonly label: string;
+    readonly request: Omit<SubagentStartRequest, 'label' | 'signal'>;
+    readonly signal: AbortSignal;
+    readonly delivery: 'caller';
+    /**
+     * Reserved identity for a local child. Used by read-only and repair tasks to
+     * pre-register the child in the tool-scope roster before activation so the
+     * agent/created listener can apply the name-level restrict before the first
+     * prompt. Requires a provider with a local backend (spawn-in-process).
+     */
+    readonly childId?: SessionId;
+}
+/**
+ * S+R child tool scoping services (02b §2.2): dynamic per-run preset
+ * registration plus the roster backing the agent/created restrict injection.
+ * Read-only and repair tasks fail loud when the host provides none.
+ */
+/**
+ * One Cordis plugin row mounting an official tool package. Packages whose
+ * config schema declares required fields must supply them in `config` — the
+ * runtime composition mount rejects a bare row (dsh-tool-fs-search has no
+ * fallback for sampleOverCapGlobResults).
+ */
+export interface WorkflowToolPackageRow {
+    readonly name: string;
+    readonly config?: Readonly<Record<string, unknown>>;
+}
+export interface WorkflowChildToolScope {
+    /**
+     * Register a dynamic preset under exactly the id the activation request
+     * references as `agentPreset`: the runtime resolves that id against the
+     * preset registry at spawn time, so an id mismatch fails every child.
+     */
+    readonly registerPreset: (id: string, rows: readonly WorkflowToolPackageRow[]) => Promise<() => Promise<void>>;
+    readonly reserveChild: (childId: SessionId, allow: readonly string[]) => void;
+    readonly releaseChild: (childId: SessionId) => void;
+}
+/**
+ * Deployment seam for KodaX target-agent dispatch and provider-specific effort
+ * controls. Deployments that register a dispatch adapter own the read-only
+ * tool scoping of their routed tasks: the S+R roster and restrict injection
+ * only cover local activations started through this plugin directly.
+ */
 export interface WorkflowDispatchAdapter {
     start(input: {
         readonly target?: WorkflowSpawnAgentInput['target'];
         readonly effort?: string;
-        readonly provider: string;
-        readonly request: SubagentStartRequest;
+        readonly spec: WorkflowActivationSpec;
         readonly subagents: SubagentRuntime;
-    }): Promise<SubagentRun | WorkflowDispatchResult>;
+    }): Promise<SubagentActivation | WorkflowDispatchResult>;
 }
 /** Optional deployment telemetry for target/effort transports that DSH cannot infer locally. */
 export interface WorkflowDispatchTelemetry {
@@ -427,7 +472,7 @@ export interface WorkflowDispatchTelemetry {
     readonly durationMs?: number;
 }
 export interface WorkflowDispatchResult {
-    readonly run: SubagentRun;
+    readonly run: SubagentActivation;
     readonly telemetry?: WorkflowDispatchTelemetry | Promise<WorkflowDispatchTelemetry>;
 }
 export interface ResolvedWorkflowConfig {

@@ -2,16 +2,37 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkflowCapsule, validateWorkflowManifest } from '../src/capsule.js'
 import { DynamicWorkflowEngine, WorkflowSemaphore, resolveReadOnlyToolFilter } from '../src/engine.js'
 import { WorkflowRunStore } from '../src/store.js'
-import type { ResolvedWorkflowConfig, WorkflowDispatchAdapter, WorkflowModule, WorkflowStartInput } from '../src/types.js'
+import type { ResolvedWorkflowConfig, WorkflowActivationSpec, WorkflowDispatchAdapter, WorkflowModule, WorkflowStartInput } from '../src/types.js'
 import type { WorkflowVerificationAdapter, WorktreeIsolationAdapter } from '../src/types.js'
 
-function parent(cwd: string): Agent {
-  return { session: { header: { cwd }, events: [], append: vi.fn() }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'write' }, { name: 'shell' }] } } } as unknown as Agent
+// Mirrors the real runtime spawn validation: an activation request may only
+// reference an agentPreset id that is registered at start time (the exact
+// hole that let the preset-id seam break reach E6; see 03-变更说明).
+const registeredPresets = new Set<string>()
+
+// Mirrors the runtime composition mount: dsh-tool-fs-search declares
+// sampleOverCapGlobResults required with no fallback, so a bare row fails
+// (E6 缺陷 #4).
+function assertPackageRows(rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]): void {
+  for (const row of rows) {
+    if (row.name === '@deepseek-ai/dsh-tool-fs-search' && row.config?.sampleOverCapGlobResults === undefined) {
+      throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+    }
+  }
+}
+
+function parent(cwd: string, tools: readonly string[] = ['read', 'write', 'shell']): Agent {
+  const events: unknown[] = []
+  return { session: { header: { cwd }, events, snapshotEvents: () => [...events], append: vi.fn() }, ctx: { tools: { schemas: () => tools.map(name => ({ name })) } } } as unknown as Agent
+}
+
+function agentWithEvents(cwd: string, events: unknown[] = []): Agent {
+  return { session: { header: { cwd }, events, snapshotEvents: () => [...events], append: vi.fn() }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'write' }, { name: 'shell' }] } } } as unknown as Agent
 }
 
 function config(overrides: Partial<ResolvedWorkflowConfig> = {}): ResolvedWorkflowConfig {
@@ -42,23 +63,28 @@ function module(source: string, overrides: Record<string, unknown> = {}): Workfl
 
 interface FakeSubagents {
   readonly service: SubagentRuntime
-  readonly starts: ReturnType<typeof vi.fn<(provider: string, request: SubagentStartRequest) => Promise<unknown>>>
+  readonly starts: ReturnType<typeof vi.fn<(spec: WorkflowActivationSpec) => Promise<unknown>>>
+  readonly liveAgent?: Agent | undefined
 }
 
-function subagents(handler?: (provider: string, request: SubagentStartRequest, index: number) => Promise<{ output: { type: 'text'; text: string }[]; structured?: unknown; stopReason: 'completed' | 'error' | 'aborted' }>, initialLocalAgent?: Agent): FakeSubagents {
+function subagents(handler?: (provider: string, request: Omit<WorkflowActivationSpec['request'], never>, index: number) => Promise<{ output: { type: 'text'; text: string }[]; structured?: unknown; stopReason: 'completed' | 'error' | 'aborted' }>, initialLocalAgent?: Agent): FakeSubagents {
   let index = 0
-  const starts = vi.fn(async (provider: string, request: SubagentStartRequest) => {
+  const starts = vi.fn(async (spec: WorkflowActivationSpec) => {
+    if (spec.request.agentPreset !== undefined && !registeredPresets.has(spec.request.agentPreset)) {
+      throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
+    }
     const current = ++index
     const result = handler === undefined
       ? Promise.resolve({ output: [{ type: 'text' as const, text: `result-${current}` }], stopReason: 'completed' as const })
-      : handler(provider, request, current)
-    return { id: `child-${current}`, localAgent: current === 1 ? initialLocalAgent : undefined, result, dispose: vi.fn(async () => {}) }
+      : handler(spec.provider, spec.request, current)
+    return { childId: `child-${current}`, messageId: `message-${current}`, result, dispose: vi.fn(async () => {}) }
   })
   return {
     starts,
+    liveAgent: initialLocalAgent,
     service: {
-      getProvider: (name: string) => name === 'spawn' ? { name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false } : undefined,
-      start: starts,
+      getProvider: (name: string) => name === 'spawn' ? { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } : undefined,
+      startActivation: starts,
     } as unknown as SubagentRuntime,
   }
 }
@@ -74,6 +100,8 @@ async function fixture(options: {
   readonly isolation?: WorktreeIsolationAdapter
   readonly deploymentSemaphore?: WorkflowSemaphore
   readonly dispatch?: WorkflowDispatchAdapter
+  readonly resolveLiveAgent?: (childId: string) => Agent | undefined
+  readonly parentTools?: readonly string[]
 }) {
   const cwd = await mkdtemp(join(tmpdir(), 'dsh-workflow-engine-'))
   const fake = options.fake ?? subagents()
@@ -87,9 +115,21 @@ async function fixture(options: {
     ...(options.isolation === undefined ? {} : { isolation: options.isolation }),
     ...(options.deploymentSemaphore === undefined ? {} : { deploymentSemaphore: options.deploymentSemaphore }),
     ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
+    ...(options.resolveLiveAgent !== undefined
+      ? { resolveLiveAgent: options.resolveLiveAgent }
+      : fake.liveAgent === undefined ? {} : { resolveLiveAgent: () => fake.liveAgent }),
+    childTools: {
+      registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => {
+        assertPackageRows(rows)
+        registeredPresets.add(id)
+        return async () => { registeredPresets.delete(id) }
+      },
+      reserveChild: () => undefined,
+      releaseChild: () => undefined,
+    },
     id: () => `run-${++sequence}`,
   })
-  return { cwd, parent: parent(cwd), fake, store, engine, module: module(options.source, options.manifest) }
+  return { cwd, parent: parent(cwd, options.parentTools), fake, store, engine, module: module(options.source, options.manifest) }
 }
 
 describe('dynamic workflow engine', () => {
@@ -123,10 +163,25 @@ describe('dynamic workflow engine', () => {
     ]))
     expect(result.outcome).toMatchObject({ status: 'completed', results: [{ summary: 'result-1', artifacts: [] }, { summary: 'result-2', artifacts: [] }], usage: { totalSpawned: 2 } })
     expect(fx.fake.starts).toHaveBeenCalledTimes(3)
-    expect(fx.fake.starts.mock.calls[0]).toMatchObject(['spawn', { toolFilter: { allow: ['read'] }, agentOptions: { provider: 'mock-llm', model: 'fast-model', maxTokens: 10 } }])
+    expect(fx.fake.starts.mock.calls[0]?.[0]).toMatchObject({ provider: 'spawn', request: { agentPreset: expect.any(String), agentOptions: { provider: 'mock-llm', model: 'fast-model', maxTokens: 10 } }, delivery: 'caller' })
     expect(fx.store.getEvents(run.runId).map(event => event.type)).toEqual(expect.arrayContaining(['workflow-started', 'phase-started', 'agent-started', 'agent-completed', 'artifact-written', 'workflow-completed']))
     expect(observed).toContain('workflow-completed')
     unsubscribe()
+  })
+
+  it('mounts the fs-search package row with its required config when the parent exposes glob/grep', async () => {
+    // E6 缺陷 #4: the read-only composition mount validates package config,
+    // and dsh-tool-fs-search declares sampleOverCapGlobResults required with
+    // no fallback — the registry stub mirrors that validation.
+    const fx = await fixture({
+      parentTools: ['read', 'write', 'shell', 'glob', 'grep'],
+      source: `async function run(wf, args) { return await wf.runAgent({ name: 'searcher', prompt: 'find', readOnly: true }); }`,
+    })
+    const run = await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent, args: {} })
+    const result = await run.done
+    expect(result.process?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'agent', title: 'searcher', status: 'completed' }),
+    ]))
   })
 
   it('builds a fail-closed read-only allow-list from the real visible catalog shape', () => {
@@ -155,10 +210,10 @@ describe('dynamic workflow engine', () => {
 
   it('routes target and effort through an explicit deployment dispatch adapter', async () => {
     const fake = subagents()
-    const dispatch: WorkflowDispatchAdapter = { start: vi.fn(async input => await input.subagents.start(input.provider, input.request)) }
+    const dispatch: WorkflowDispatchAdapter = { start: vi.fn(async input => await input.subagents.startActivation(input.spec)) }
     const fx = await fixture({ fake, dispatch, source: `async function run(wf, args) { return await wf.runAgent({ name: 'targeted', prompt: 'continue', target: { agentId: 'agent-1', expectedConfigurationRevision: 'r2' }, effort: 'high' }); }` })
     expect(await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done).toMatchObject({ status: 'completed' })
-    expect(dispatch.start).toHaveBeenCalledWith(expect.objectContaining({ target: { agentId: 'agent-1', expectedConfigurationRevision: 'r2' }, effort: 'high', provider: 'spawn' }))
+    expect(dispatch.start).toHaveBeenCalledWith(expect.objectContaining({ target: { agentId: 'agent-1', expectedConfigurationRevision: 'r2' }, effort: 'high', spec: expect.objectContaining({ provider: 'spawn' }) }))
     const unsupported = await fixture({ source: `async function run(wf, args) { return await wf.runAgent({ name: 'targeted', prompt: 'continue', target: { agentId: 'agent-1' } }); }` })
     expect(await (await unsupported.engine.start({ module: unsupported.module, source: 'inline', parent: unsupported.parent })).done).toMatchObject({ status: 'failed', error: expect.stringContaining('dispatch adapter') })
   })
@@ -181,7 +236,7 @@ describe('dynamic workflow engine', () => {
       ? { output: [{ type: 'text', text: 'analysis without JSON' }], stopReason: 'completed' }
       : { output: [{ type: 'text', text: '```json\n{"answer":"fixed"}\n```' }], structured: { answer: 'fixed' }, stopReason: 'completed' })
     const dispatch: WorkflowDispatchAdapter = {
-      start: vi.fn(async input => ({ run: await input.subagents.start(input.provider, input.request), telemetry: { resolvedEffort: input.effort } })),
+      start: vi.fn(async input => ({ run: await input.subagents.startActivation(input.spec), telemetry: { resolvedEffort: input.effort } })),
     }
     const fx = await fixture({ fake, dispatch, source: `async function run(wf, args) { return await wf.runAgent({
       name: 'structured', prompt: 'answer', modelHint: 'deep', effort: 'high',
@@ -190,7 +245,7 @@ describe('dynamic workflow engine', () => {
     const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
     expect(result.result).toMatchObject({ structured: { answer: 'fixed' }, requestedTier: 'deep', tierOutcome: 'applied', resolvedEffort: 'high' })
     expect(fake.starts).toHaveBeenCalledTimes(2)
-    expect(fake.starts.mock.calls[1]).toMatchObject(['spawn', { toolFilter: { allow: [] }, agentOptions: { provider: 'mock-llm', model: 'deep-model' } }])
+    expect(fake.starts.mock.calls[1]?.[0]).toMatchObject({ provider: 'spawn', request: { agentPreset: expect.any(String), agentOptions: { provider: 'mock-llm', model: 'deep-model' } } })
     expect(dispatch.start).toHaveBeenCalledTimes(2)
   })
 
@@ -200,7 +255,7 @@ describe('dynamic workflow engine', () => {
       { type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } },
       { type: 'step/end', seq: 2, time: 3, data: { turn: 1, step: 1, reason: { kind: 'completed' } } },
       { type: 'turn/end', seq: 3, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
-    ] } } as unknown as Agent
+    ], snapshotEvents() { return this.events } } } as unknown as Agent
     const fake = subagents(async (_provider, _request, index) => index === 1
       ? { output: [{ type: 'text', text: 'completed report without native capture' }], stopReason: 'error' }
       : { output: [{ type: 'text', text: '{"answer":"recovered"}' }], stopReason: 'completed' }, localAgent)
@@ -225,7 +280,7 @@ describe('dynamic workflow engine', () => {
       { type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } },
       { type: 'step/end', seq: 2, time: 3, data: { turn: 1, step: 1, reason: { kind: 'completed' } } },
       { type: 'turn/end', seq: 3, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
-    ] } } as unknown as Agent
+    ], snapshotEvents() { return this.events } } } as unknown as Agent
     const failedRepair = subagents(async (_provider, _request, index) => index === 1
       ? { output: [{ type: 'text', text: 'missing capture' }], stopReason: 'error' }
       : { output: [{ type: 'text', text: '{"answer":"looks-valid"}' }], stopReason: 'error' }, localAgent)
@@ -348,6 +403,7 @@ describe('dynamic workflow engine', () => {
       config: config({ readOnlyToolFilter: { deny: ['read', 'write', 'shell'] } }),
       store: fx.store,
       resolveNested: async () => { throw new Error('nested workflow not found') },
+      childTools: { registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => { assertPackageRows(rows); registeredPresets.add(id); return async () => { registeredPresets.delete(id) } }, reserveChild: () => undefined, releaseChild: () => undefined },
       id: () => 'run-policy-change',
     })
     const resumed = await stricter.start({ module: fx.module, source: 'run-snapshot', parent: fx.parent, resumeFromRunId: first.runId })
@@ -372,24 +428,24 @@ describe('dynamic workflow engine', () => {
   })
 
   it('requires each declared changed path to differ from its own pre-task baseline', async () => {
-    let request!: SubagentStartRequest
+    let request!: WorkflowActivationSpec['request']
     const events: unknown[] = [
       { type: 'tool/call', data: { callId: 'write-1', name: 'write', arguments: '{"path":"other.txt"}' } },
       { type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'write-1', content: [{ type: 'text', text: 'ok' }] }] } } },
     ]
-    const localAgent = { session: { events }, followup: vi.fn(async () => {}), whenIdle: vi.fn(async () => {}), cancel: vi.fn(), steer: vi.fn() }
-    const starts = vi.fn(async (_provider: string, input: SubagentStartRequest) => {
-      request = input
+    const localAgent = { session: { events, snapshotEvents: () => [...events] }, followup: vi.fn(async () => {}), whenIdle: vi.fn(async () => {}), cancel: vi.fn(), steer: vi.fn() } as unknown as Agent
+    const starts = vi.fn(async (spec: WorkflowActivationSpec) => {
+      request = spec.request
       return {
-        id: 'changed-path-child', localAgent,
+        childId: 'changed-path-child', messageId: 'changed-path-message',
         result: (async () => {
-          await writeFile(join(input.parent.session.header.cwd!, 'other.txt'), 'changed by child')
+          await writeFile(join(spec.request.parent.session.header.cwd!, 'other.txt'), 'changed by child')
           return { output: [{ type: 'text' as const, text: 'completed the requested change' }], stopReason: 'completed' as const }
         })(),
         dispose: vi.fn(async () => {}),
       }
     })
-    const fake = { starts, service: { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false }), start: starts } as unknown as SubagentRuntime }
+    const fake = { starts, liveAgent: localAgent, service: { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false }), startActivation: starts } as unknown as SubagentRuntime }
     const fx = await fixture({ fake, manifest: { readOnly: false }, source: `async function run(wf, args) { return await wf.runAgent({ name: 'writer', prompt: 'change required.txt', verification: { enforcement: 'hard', requiresMutation: true, requiredChangedPaths: ['required.txt'] } }); }` })
     await writeFile(join(fx.cwd, 'required.txt'), 'baseline')
     await writeFile(join(fx.cwd, 'other.txt'), 'baseline')
@@ -466,17 +522,18 @@ describe('dynamic workflow engine', () => {
     const steer = vi.fn()
     const cancel = vi.fn()
     const dispose = vi.fn(async () => {})
+    const childEvents: unknown[] = [{ type: 'assistant/message', data: { usage: { inputTokens: 3, outputTokens: 4 } } }]
     const child = {
-      session: { events: [{ type: 'assistant/message', data: { usage: { inputTokens: 3, outputTokens: 4 } } }] },
+      session: { events: childEvents, snapshotEvents: () => [...childEvents] },
       steer, cancel,
-    }
-    const starts = vi.fn(async (_provider: string, _request: SubagentStartRequest) => ({ id: 'child-live', localAgent: child, result: gate.then(() => ({ output: [{ type: 'text' as const, text: 'verified' }], structured: { ok: true }, stopReason: 'completed' as const })), dispose }))
-    const fake = { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false }), start: starts } as unknown as SubagentRuntime
+    } as unknown as Agent
+    const starts = vi.fn(async (spec: WorkflowActivationSpec) => ({ childId: spec.childId ?? 'child-live', messageId: 'message-live', result: gate.then(() => ({ output: [{ type: 'text' as const, text: 'verified' }], structured: { ok: true }, stopReason: 'completed' as const })), dispose }))
+    const fake = { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false }), startActivation: starts } as unknown as SubagentRuntime
     const isolatedParent = parent('C:\\isolated')
     const isolation = { name: 'test', prepare: vi.fn(async () => ({ cwd: 'C:\\isolated', parent: isolatedParent, dispose: vi.fn(async () => {}) })) }
     const verification = { preflight: vi.fn(async () => []), verify: vi.fn(async () => ['warn-only']) }
     const fx = await fixture({
-      fake: { service: fake, starts: starts as never }, isolation, verification,
+      fake: { service: fake, starts: starts as never, liveAgent: child }, isolation, verification,
       source: `async function run(wf, args) {
         const handle = await wf.spawnAgent({ name: 'live', phase: 'verify', prompt: 'inspect', scopeSummary: 'src', constraints: ['no edits'], evidenceRefs: ['finding:1'], isolation: 'worktree', verification: { enforcement: 'warn' }, outputSchema: { type: 'object', additionalProperties: true }, terseResult: true });
         await wf.send(handle.taskId, 'focus');
@@ -495,7 +552,7 @@ describe('dynamic workflow engine', () => {
     expect(isolation.prepare).toHaveBeenCalledOnce()
     expect(verification.preflight).toHaveBeenCalledOnce()
     expect(verification.verify).toHaveBeenCalledOnce()
-    expect(starts.mock.calls[0]?.[1].prompt[0]).toMatchObject({ text: expect.stringMatching(/Scope: src.*Constraints:.*Evidence references:.*Isolated workspace: C:\\isolated.*terse final result/su) })
+    expect(starts.mock.calls[0]?.[0].request.prompt[0]).toMatchObject({ text: expect.stringMatching(/Scope: src.*Constraints:.*Evidence references:.*Isolated workspace: C:\\isolated.*terse final result/su) })
     expect(cancel).not.toHaveBeenCalled()
     expect(dispose).toHaveBeenCalledOnce()
   })
@@ -516,27 +573,31 @@ describe('dynamic workflow engine', () => {
 
   it('repairs a hard read contract on the same local actor and captures the evidence', async () => {
     const calls: unknown[] = []
-    const starts = vi.fn(async (_provider: string, request: SubagentStartRequest) => {
+    let reservedChild = 0
+    const starts = vi.fn(async (spec: WorkflowActivationSpec) => {
       const events: unknown[] = []
       const localAgent = {
-        session: { events },
+        session: { events, snapshotEvents: () => [...events] },
         followup: vi.fn(() => {
           events.push(
             { type: 'tool/call', data: { callId: 'call-1', name: 'read', arguments: '{"path":"evidence.txt"}' } },
-            { type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'ok' }] }] } } },
+            { type: 'tool/result', data: { message: { toolCallId: 'call-1', isError: false } } },
             { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'repaired final result' }] } } },
           )
           calls.push('followup')
         }),
         whenIdle: vi.fn(async () => {}), cancel: vi.fn(), steer: vi.fn(),
       }
-      return { id: 'local-child', localAgent, result: Promise.resolve({ output: [{ type: 'text' as const, text: 'initial' }], stopReason: 'completed' as const }), dispose: vi.fn(async () => {}) }
+      reservedChild += 1
+      ;(liveAgents as Map<string, unknown>).set(spec.childId ?? `local-child-${reservedChild}`, localAgent)
+      return { childId: spec.childId ?? `local-child-${reservedChild}`, messageId: `message-${reservedChild}`, result: Promise.resolve({ output: [{ type: 'text' as const, text: 'initial' }], stopReason: 'completed' as const }), dispose: vi.fn(async () => {}) }
     })
+    const liveAgents = new Map<string, unknown>()
     const fake: FakeSubagents = {
       starts,
-      service: { getProvider: (name: string) => ({ name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false }), start: starts } as unknown as SubagentRuntime,
+      service: { getProvider: (name: string) => ({ name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false }), startActivation: starts } as unknown as SubagentRuntime,
     }
-    const fx = await fixture({ fake, source: `async function run(wf, args) { return await wf.runAgent({ name: 'reader', prompt: 'read it', verification: { enforcement: 'hard', requiredReadPaths: ['evidence.txt'] } }); }` })
+    const fx = await fixture({ fake, resolveLiveAgent: childId => liveAgents.get(childId) as never, source: `async function run(wf, args) { return await wf.runAgent({ name: 'reader', prompt: 'read it', verification: { enforcement: 'hard', requiredReadPaths: ['evidence.txt'] } }); }` })
     await writeFile(join(fx.cwd, 'evidence.txt'), 'evidence')
     const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
     expect(calls).toEqual(['followup'])
@@ -563,12 +624,12 @@ describe('dynamic workflow engine', () => {
   it('preserves hard-verification final text, measured usage, and route facts on failure', async () => {
     const events: unknown[] = [{ type: 'assistant/message', data: { usage: { inputTokens: 5, outputTokens: 7 }, message: { content: [{ type: 'text', text: 'initial complete answer' }] } } }]
     const localAgent = {
-      session: { events },
+      session: { events, snapshotEvents: () => [...events] },
       followup: vi.fn(() => { events.push({ type: 'assistant/message', data: { usage: { inputTokens: 1, outputTokens: 2 }, message: { content: [{ type: 'text', text: 'repaired but still rejected' }] } } }) }),
       whenIdle: vi.fn(async () => {}), cancel: vi.fn(), steer: vi.fn(),
-    }
-    const starts = vi.fn(async () => ({ id: 'verified-child', localAgent, result: Promise.resolve({ output: [{ type: 'text' as const, text: 'initial complete answer' }], stopReason: 'completed' as const }), dispose: vi.fn(async () => {}) }))
-    const fake: FakeSubagents = { starts, service: { getProvider: (name: string) => ({ name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false }), start: starts } as unknown as SubagentRuntime }
+    } as unknown as Agent
+    const starts = vi.fn(async (spec: WorkflowActivationSpec) => ({ childId: spec.childId ?? 'verified-child', messageId: 'verified-message', result: Promise.resolve({ output: [{ type: 'text' as const, text: 'initial complete answer' }], stopReason: 'completed' as const }), dispose: vi.fn(async () => {}) }))
+    const fake: FakeSubagents = { starts, liveAgent: localAgent, service: { getProvider: (name: string) => ({ name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false }), startActivation: starts } as unknown as SubagentRuntime }
     const verification: WorkflowVerificationAdapter = { preflight: async () => [], verify: async () => ['proof rejected'] }
     const fx = await fixture({ fake, verification, source: `async function run(wf, args) { const handle = await wf.spawnAgent({ name: 'strict', prompt: 'answer', modelHint: 'deep', verification: { enforcement: 'hard' } }); return await wf.wait(handle.taskId); }` })
     const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
@@ -599,8 +660,8 @@ describe('dynamic workflow engine', () => {
   })
 
   it('supports bounded waits and whole-run cancellation', async () => {
-    const timeoutFake = subagents(async (_provider, request) => await new Promise(resolve => {
-      setTimeout(() => resolve({ output: [{ type: 'text', text: 'late' }], stopReason: 'completed' }), request.label === 'slow' ? 20 : 0)
+    const timeoutFake = subagents(async (_provider, _spec, index) => await new Promise(resolve => {
+      setTimeout(() => resolve({ output: [{ type: 'text', text: 'late' }], stopReason: 'completed' }), index === 1 ? 20 : 0)
     }))
     const timeout = await fixture({ fake: timeoutFake, source: `async function run(wf, args) {
       const handle = await wf.spawnAgent({ name: 'slow', prompt: 'slow' });
@@ -612,9 +673,11 @@ describe('dynamic workflow engine', () => {
     let settle!: (value: { output: { type: 'text'; text: string }[]; stopReason: 'aborted' }) => void
     const pending = new Promise<{ output: { type: 'text'; text: string }[]; stopReason: 'aborted' }>(resolve => { settle = resolve })
     const cancel = vi.fn(() => settle({ output: [{ type: 'text', text: 'cancelled' }], stopReason: 'aborted' }))
-    const starts = vi.fn(async () => ({ id: 'child-cancel', localAgent: { session: { events: [] }, cancel, steer: vi.fn() }, result: pending, dispose: vi.fn(async () => {}) }))
-    const service = { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false }), start: starts } as unknown as SubagentRuntime
-    const stopped = await fixture({ fake: { service, starts: starts as never }, source: `async function run(wf, args) { return await wf.runAgent({ name: 'cancel', prompt: 'cancel' }); }` })
+    const cancelChildEvents: unknown[] = []
+    const cancelChild = { session: { events: cancelChildEvents, snapshotEvents: () => [...cancelChildEvents] }, cancel, steer: vi.fn() } as unknown as Agent
+    const starts = vi.fn(async (spec: WorkflowActivationSpec) => ({ childId: spec.childId ?? 'child-cancel', messageId: 'cancel-message', result: pending, dispose: vi.fn(async () => {}) }))
+    const service = { getProvider: () => ({ name: 'spawn', capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false }), startActivation: starts } as unknown as SubagentRuntime
+    const stopped = await fixture({ fake: { service, starts: starts as never, liveAgent: cancelChild }, source: `async function run(wf, args) { return await wf.runAgent({ name: 'cancel', prompt: 'cancel' }); }` })
     const active = await stopped.engine.start({ module: stopped.module, source: 'inline', parent: stopped.parent })
     await vi.waitFor(() => expect(starts).toHaveBeenCalledOnce())
     expect(stopped.engine.stop(active.runId, 'user stop')).toBe(true)

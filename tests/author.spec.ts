@@ -1,5 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import { describe, expect, it, vi } from 'vitest'
 import { authorWorkflowCapsule } from '../src/author.js'
 import type { ResolvedWorkflowConfig } from '../src/types.js'
@@ -28,12 +28,15 @@ function authored(source = `async function run(wf, args) { return await wf.runAg
   }
 }
 
-function service(payloads: unknown[], capabilities = { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }) {
+function service(payloads: unknown[], capabilities = { outputSchema: true, depthLimit: true, agentPreset: true }) {
   let index = 0
-  const start = vi.fn(async (_provider: string, _request: SubagentStartRequest) => {
-    const payload = payloads[index++]
+  const startActivation = vi.fn(async (spec: { readonly provider: string; readonly request: { readonly prompt: readonly [{ readonly text?: string }]; readonly agentPreset?: string } }) => {
+    if (!['scout', 'author'].includes(spec.provider)) throw new Error(`unexpected provider "${spec.provider}"`)
+    if (spec.request.agentPreset !== undefined && !presetRegistry.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
+    index += 1
+    const payload = payloads[index - 1]
     return {
-      id: `child-${index}`, localAgent: undefined,
+      childId: `child-${index}`, messageId: `message-${index}`,
       result: Promise.resolve(index === 1
         ? { output: [{ type: 'text' as const, text: 'workspace facts' }], stopReason: 'completed' as const }
         : { output: [{ type: 'text' as const, text: 'authored' }], structured: payload, stopReason: 'completed' as const }),
@@ -41,51 +44,67 @@ function service(payloads: unknown[], capabilities = { outputSchema: true, depth
     }
   })
   return {
-    start,
-    value: { getProvider: (name: string) => ['scout', 'author'].includes(name) ? { name, capabilities, inheritsParentContext: false } : undefined, start } as unknown as SubagentRuntime,
+    startActivation,
+    value: { getProvider: (name: string) => ['scout', 'author'].includes(name) ? { name, capabilities, inheritsParentContext: false } : undefined, startActivation } as unknown as SubagentRuntime,
   }
+}
+
+const presetRegistry = new Set<string>()
+const childTools = {
+  registerPreset: async (id: string, rows: readonly { readonly name: string; readonly config?: Readonly<Record<string, unknown>> }[]) => {
+    // Mirrors the runtime mount: fs-search requires sampleOverCapGlobResults.
+    for (const row of rows) {
+      if (row.name === '@deepseek-ai/dsh-tool-fs-search' && row.config?.sampleOverCapGlobResults === undefined) {
+        throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+      }
+    }
+    presetRegistry.add(id)
+    return async () => { presetRegistry.delete(id) }
+  },
+  reserveChild: () => undefined,
+  releaseChild: () => undefined,
 }
 
 describe('scout-then-author workflow generation', () => {
   it('uses read-only model-tier routes and returns a validated capsule', async () => {
     const fake = service([undefined, authored()])
-    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })
+    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })
     expect(result.capsule).toMatchObject({ format: 'dsh.workflow', manifest: { name: 'authored' }, provenance: { dshVersion: '0.0.1-rc.2', pluginVersion: '0.1.0' } })
-    expect(fake.start).toHaveBeenCalledTimes(2)
-    expect(fake.start.mock.calls[0]).toMatchObject(['scout', { toolFilter: { allow: ['read'] }, agentOptions: { provider: 'fast-llm', model: 'quick', maxTokens: 100 } }])
-    expect(fake.start.mock.calls[1]).toMatchObject(['author', { outputSchema: expect.any(Object), agentOptions: { provider: 'deep-llm', model: 'deep', maxTokens: 300 } }])
+    expect(fake.startActivation).toHaveBeenCalledTimes(2)
+    expect(fake.startActivation.mock.calls[0]?.[0]).toMatchObject({ provider: 'scout', request: { agentPreset: expect.any(String), agentOptions: { provider: 'fast-llm', model: 'quick', maxTokens: 100 } }, delivery: 'caller' })
+    expect(fake.startActivation.mock.calls[1]?.[0]).toMatchObject({ provider: 'author', request: { outputSchema: expect.any(Object), agentOptions: { provider: 'deep-llm', model: 'deep', maxTokens: 300 } } })
   })
 
   it('feeds validation failures into a bounded repair loop', async () => {
     const fake = service([undefined, authored('not a workflow'), authored()])
-    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })
+    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })
     expect(result.capsule.manifest.name).toBe('authored')
-    expect(fake.start).toHaveBeenCalledTimes(3)
-    expect(fake.start.mock.calls[2]?.[1].prompt[0]).toMatchObject({ text: expect.stringContaining('Repair this validation failure') })
+    expect(fake.startActivation).toHaveBeenCalledTimes(3)
+    expect(fake.startActivation.mock.calls[2]?.[0].request.prompt[0]).toMatchObject({ text: expect.stringContaining('Repair this validation failure') })
   })
 
   it('fails loudly when authoring cannot enforce required provider capabilities', async () => {
-    const fake = service([], { outputSchema: true, depthLimit: true, toolFilter: false, persona: true })
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/cannot enforce read-only/u)
-    await expect(authorWorkflowCapsule({ request: ' ', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/must be non-empty/u)
+    const fake = service([], { outputSchema: true, depthLimit: true, agentPreset: false })
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/cannot compose an independent read-only tool set/u)
+    await expect(authorWorkflowCapsule({ request: ' ', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/must be non-empty/u)
   })
 
   it('bounds irreparable author output and validates structured-output capability', async () => {
     const invalid = service([undefined, authored('invalid'), authored('invalid'), authored('invalid')])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: invalid.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/failed validation after 3 attempts/u)
-    expect(invalid.start).toHaveBeenCalledTimes(4)
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: invalid.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/failed validation after 3 attempts/u)
+    expect(invalid.startActivation).toHaveBeenCalledTimes(4)
 
-    const incapable = service([undefined], { outputSchema: false, depthLimit: true, toolFilter: true, persona: true })
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: incapable.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/cannot produce structured output/u)
+    const incapable = service([undefined], { outputSchema: false, depthLimit: true, agentPreset: true })
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: incapable.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/cannot produce structured output/u)
   })
 
   it('records revision and source-run provenance', async () => {
     const firstFake = service([undefined, authored()])
-    const first = await authorWorkflowCapsule({ request: 'build it', parent, subagents: firstFake.value, config: config(), signal: new AbortController().signal })
+    const first = await authorWorkflowCapsule({ request: 'build it', parent, subagents: firstFake.value, config: config(), signal: new AbortController().signal, childTools })
     const revisedFake = service([undefined, authored()])
-    const revised = await authorWorkflowCapsule({ request: 'build it', parent, subagents: revisedFake.value, config: config(), signal: new AbortController().signal, existing: first.capsule, change: 'more evidence', fromRunId: 'run-source' })
+    const revised = await authorWorkflowCapsule({ request: 'build it', parent, subagents: revisedFake.value, config: config(), signal: new AbortController().signal, childTools, existing: first.capsule, change: 'more evidence', fromRunId: 'run-source' })
     expect(revised.capsule.provenance).toMatchObject({ fromRunId: 'run-source', fromWorkflowName: 'authored', revisionOf: 'authored' })
-    expect(revisedFake.start.mock.calls[1]?.[1].prompt[0]).toMatchObject({ text: expect.stringMatching(/Existing capsule:.*Requested change:\nmore evidence/su) })
+    expect(revisedFake.startActivation.mock.calls[1]?.[0].request.prompt[0]).toMatchObject({ text: expect.stringMatching(/Existing capsule:.*Requested change:\nmore evidence/su) })
   })
 
   it('rejects an agent name passed where an opaque task id is required', async () => {
@@ -94,7 +113,7 @@ describe('scout-then-author workflow generation', () => {
       return await wf.wait('worker');
     }`
     const fake = service([undefined, authored(source), authored(source), authored(source)])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/used an agent name.*taskId/su)
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/used an agent name.*taskId/su)
   })
 
   it('accepts task APIs called with the handle returned by spawnAgent', async () => {
@@ -108,7 +127,7 @@ describe('scout-then-author workflow generation', () => {
       return { summary: result.finalText, taskId: snapshot.taskId, outputTaskId: output.taskId };
     }`
     const fake = service([undefined, authored(source)])
-    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })
+    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })
     expect(result.capsule.source).toBe(source)
   })
 
@@ -121,7 +140,7 @@ describe('scout-then-author workflow generation', () => {
         return second;
       }`
       const fake = service([undefined, authored(source), authored(source), authored(source)])
-      await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(reference === 'task_id:first' ? /used an agent name.*taskId/su : /unknown workflow task id/u)
+      await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(reference === 'task_id:first' ? /used an agent name.*taskId/su : /unknown workflow task id/u)
     }
   })
 
@@ -133,7 +152,7 @@ describe('scout-then-author workflow generation', () => {
       return { summary: second && second.finalText };
     }`
     const fake = service([undefined, authored(source)])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).resolves.toMatchObject({ capsule: { source } })
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).resolves.toMatchObject({ capsule: { source } })
   })
 
   it.each([
@@ -150,7 +169,7 @@ describe('scout-then-author workflow generation', () => {
       return { summary: 'done' };
     }`
     const fake = service([undefined, authored(source), authored(source), authored(source)])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/unknown workflow task id/u)
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/unknown workflow task id/u)
   })
 
   it('rejects an empty agent name during smoke validation', async () => {
@@ -159,7 +178,7 @@ describe('scout-then-author workflow generation', () => {
       return { summary: result && result.finalText };
     }`
     const fake = service([undefined, authored(source), authored(source), authored(source)])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/workflow agent input\.name must be a non-empty string/u)
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/workflow agent input\.name must be a non-empty string/u)
   })
 
   it.each([
@@ -174,7 +193,7 @@ describe('scout-then-author workflow generation', () => {
       return ${returned};
     }`
     const fake = service([undefined, authored(source), authored(source), authored(source)])
-    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })).rejects.toThrow(/no displayable result or artifact/u)
+    await expect(authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })).rejects.toThrow(/no displayable result or artifact/u)
   })
 
   it('accepts an otherwise empty top-level result when the workflow wrote an artifact', async () => {
@@ -184,7 +203,7 @@ describe('scout-then-author workflow generation', () => {
       return null;
     }`
     const fake = service([undefined, authored(source)])
-    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal })
+    const result = await authorWorkflowCapsule({ request: 'build it', parent, subagents: fake.value, config: config(), signal: new AbortController().signal, childTools })
     expect(result.capsule.source).toBe(source)
   })
 })

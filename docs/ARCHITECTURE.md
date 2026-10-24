@@ -35,7 +35,7 @@ flowchart TD
 ## Important invariants
 
 1. A capability-generated script cannot obtain a host object; every crossing is detached JSON.
-2. A task handle is returned only after `ctx.subagents.start()` publishes the child.
+2. A task handle is returned only after `ctx.subagents.startActivation()` publishes the child.
 3. Every published native agent-start edge has exactly one native agent-end edge.
 4. Every published child produces an explicit completed/completed-unverified/failed/stopped AgentResult; run-control failures still propagate.
 5. Pause blocks tasks that are not yet published, including tasks already queued on the semaphore.

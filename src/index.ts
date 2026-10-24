@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -18,7 +20,7 @@ import { createWorkflowCapsule, validateWorkflowArgs, validateWorkflowManifest }
 import { smokeWorkflowCapsule } from './author.js'
 import { scopedReviewWorkflow, writeReviewPackets } from './scoped-review.js'
 import { DynamicWorkflowService } from './service.js'
-import type { ModelTierRoute, ResolvedWorkflowConfig, WorkflowModule, WorkflowRun, WorkflowRunSnapshot } from './types.js'
+import type { ModelTierRoute, ResolvedWorkflowConfig, WorkflowModule, WorkflowRun, WorkflowRunSnapshot, WorkflowToolPackageRow } from './types.js'
 
 export { DynamicWorkflowService } from './service.js'
 export * from './types.js'
@@ -119,6 +121,22 @@ function tier(subagentProvider: string, provider: string, model: string, maxToke
   return { subagentProvider, ...(provider.length === 0 ? {} : { provider }), ...(model.length === 0 ? {} : { model }), maxTokens }
 }
 
+// Version metadata derives from the shipped manifests so capsule provenance,
+// run runtime metadata, and the capsule minDshVersion gate never drift from
+// the package version or the recorded compatibility target (E6 缺陷 #5).
+function ownPackageVersion(): string {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }
+  if (pkg.version === undefined || pkg.version === '') throw new Error('workflow plugin package.json declares no version')
+  return pkg.version
+}
+
+function compatibilityTargetVersion(): string {
+  const compatibility = JSON.parse(readFileSync(new URL('../compatibility.json', import.meta.url), 'utf8')) as { target?: { version?: string } }
+  const version = compatibility.target?.version
+  if (version === undefined || version === '') throw new Error('workflow plugin compatibility.json declares no target version')
+  return version
+}
+
 function resolveConfig(config: Config): ResolvedPluginConfig {
   return {
     projectDirectory: config.projectDirectory ?? '.dsh/workflows',
@@ -148,8 +166,8 @@ function resolveConfig(config: Config): ResolvedPluginConfig {
     availableMcp: [...(config.availableMcp ?? [])],
     availableSkills: [...(config.availableSkills ?? [])],
     maxRetainedRuns: config.maxRetainedRuns ?? 500,
-    pluginVersion: '0.1.2',
-    dshVersion: '0.0.1-rc.2',
+    pluginVersion: ownPackageVersion(),
+    dshVersion: compatibilityTargetVersion(),
   }
 }
 
@@ -213,7 +231,7 @@ function handoffWorkflowRequest(agent: Agent, request: string, grants: WorkflowH
         `Minimal example: source \`async function run(wf,args){return await wf.phase("analyze",async()=>{const r=await wf.runAgent({name:"analyst",prompt:String(args?.request??"analyze the task"),readOnly:true,modelHint:"balanced"});return r?.finalText??"no result"})}\` with manifest \`{"name":"focused-analysis","description":"Analyze with one specialist.","phases":["analyze"],"readOnly":true,"maxAgents":1,"maxConcurrency":1,"patterns":["classify-and-act"]}\`. Adapt it to the user's task and pass the original request via args.`,
       ].join('\n'),
     }],
-    source: { kind: 'plugin', plugin: '@dsh-external/workflow', form: 'relay' },
+    source: { kind: 'dsh-external-workflow', form: 'relay' },
   }))
   const message = createUserMessage({
     content: [{ type: 'text', text: trimmed }],
@@ -227,7 +245,7 @@ function handoffWorkflowRequest(agent: Agent, request: string, grants: WorkflowH
 function hasCurrentWorkflowHandoff(agent: Agent, grants: WorkflowHandoffGrants): boolean {
   const expectedMessageId = grants.get(agent)
   if (expectedMessageId === undefined) return false
-  const events = agent.session.events ?? []
+  const events = agent.session.snapshotEvents()
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!
     if (event.type === 'turn/start' || event.type === 'turn/end') return false
@@ -685,12 +703,16 @@ export function apply(ctx: Context, config: Config): void {
   const approval = ctx.get('approval') as ApprovalService | undefined
   const jobs = ctx.get('jobs') as JobRegistry | undefined
   const userQuestions = ctx.get('userQuestions') as UserQuestionService | undefined
+  const agents = ctx.get('agents') as { get(id: SessionId): Agent | undefined } | undefined
+  const agentPresets = ctx.get('agentPresets') as { register(definition: { id: string; plugins: readonly object[] }): Promise<() => Promise<void>> } | undefined
   ctx.plugin(DynamicWorkflowService, {
     config: resolved,
     subagents: ctx.subagents,
     ...(approval === undefined ? {} : { approval }),
     ...(jobs === undefined ? {} : { jobs }),
     ...(userQuestions === undefined ? {} : { userQuestions }),
+    ...(agents === undefined ? {} : { resolveLiveAgent: (childId: SessionId) => agents.get(childId) }),
+    ...(agentPresets === undefined ? {} : { registerChildPreset: (id: string, rows: readonly WorkflowToolPackageRow[]) => agentPresets.register({ id, plugins: [...rows] }) }),
   })
   ctx.inject(['dynamicWorkflows'], child => installSurfaces(child, resolved))
 }

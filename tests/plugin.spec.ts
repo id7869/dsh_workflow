@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,13 +7,26 @@ import { promisify } from 'node:util'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { Context, Service } from '@deepseek-ai/cordis'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import SessionTitleService, { collectSessionTitleMessages } from '@deepseek-ai/dsh-session-title'
+import SessionTitleService, { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { describe, expect, it, vi } from 'vitest'
 import workflowPlugin, { apply, name, type Config } from '../src/index.js'
 import type { WorkflowRun, WorkflowRunSnapshot } from '../src/types.js'
 
 const execFileAsync = promisify(execFile)
+
+// Mirrors the runtime composition mount: dsh-tool-fs-search declares
+// sampleOverCapGlobResults required with no fallback, so a bare row fails
+// (E6 缺陷 #4).
+function assertMountedRows(rows: readonly object[]): void {
+  for (const row of rows) {
+    const { name, config } = row as { name?: string; config?: { sampleOverCapGlobResults?: unknown } }
+    if (name === '@deepseek-ai/dsh-tool-fs-search' && config?.sampleOverCapGlobResults === undefined) {
+      throw new Error('(@deepseek-ai/dsh-tool-fs-search): invalid config: $.sampleOverCapGlobResults missing required value')
+    }
+  }
+}
 
 function snapshot(overrides: Partial<WorkflowRunSnapshot> = {}): WorkflowRunSnapshot {
   return {
@@ -55,7 +69,7 @@ function fixture(pluginConfig: Config = { approvalMode: 'never', maxAgents: 7, m
   return { ctx, tools: tools as Array<{ name: string; output: { render(args: unknown, value: unknown): unknown }; execute(args: Record<string, unknown>, exec: unknown): Promise<unknown> }>, command: () => command!, sections, service }
 }
 
-const agent = { session: { header: { cwd: 'C:\\workspace' } }, inject: vi.fn(), steer: vi.fn() } as unknown as Agent
+const agent = { session: { header: { cwd: 'C:\\workspace' }, events: [], snapshotEvents: () => [], append: vi.fn() }, inject: vi.fn(), steer: vi.fn() } as unknown as Agent
 const exec = { agent, signal: new AbortController().signal }
 const smokeableInlineSource = `async function run(wf, args) {
   return await wf.phase('run', async () => {
@@ -87,26 +101,37 @@ describe('Cordis plugin entrypoint', () => {
 
   it('aborts and awaits active workflow children when the Cordis plugin unloads', async () => {
     const childDisposed = vi.fn(async () => {})
+    const presetIds = new Set<string>()
     class StubSubagents extends Service {
       constructor(ctx: Context) { super(ctx, 'subagents') }
-      getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false } }
-      async start(_provider: string, request: { readonly signal: AbortSignal }) {
+      getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } }
+      async startActivation(spec: { readonly childId?: string; readonly signal: AbortSignal; readonly request: { readonly agentPreset?: string } }) {
+        if (spec.request.agentPreset !== undefined && !presetIds.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
         const result = new Promise<{ output: []; stopReason: 'aborted' }>(resolve => {
-          request.signal.addEventListener('abort', () => resolve({ output: [], stopReason: 'aborted' }), { once: true })
+          spec.signal.addEventListener('abort', () => resolve({ output: [], stopReason: 'aborted' }), { once: true })
         })
-        return { id: 'active-child', localAgent: undefined, result, dispose: childDisposed }
+        return { childId: spec.childId ?? 'active-child', messageId: 'active-message', result, dispose: childDisposed }
+      }
+    }
+    class StubAgentPresets extends Service {
+      constructor(ctx: Context) { super(ctx, 'agentPresets') }
+      async register(definition: { readonly id: string; readonly plugins?: readonly object[] }) {
+        assertMountedRows(definition.plugins ?? [])
+        presetIds.add(definition.id)
+        return async () => { presetIds.delete(definition.id) }
       }
     }
     class StubTools extends Service {
       constructor(ctx: Context) { super(ctx, 'tools') }
       register(): () => void { return () => {} }
-      schemas(): unknown[] { return [{ name: 'read' }] }
+      schemas(): unknown[] { return [{ name: 'read' }, { name: 'glob' }, { name: 'grep' }] }
     }
     const ctx = new Context()
     const subagents = await ctx.plugin(StubSubagents)
+    const agentPresets = await ctx.plugin(StubAgentPresets)
     const tools = await ctx.plugin(StubTools)
     const workflow = await ctx.plugin(workflowPlugin, { approvalMode: 'never' })
-    const liveAgent = { id: 'parent', ctx, session: { id: 'parent', header: { cwd: 'C:\\workspace' }, events: [], append: vi.fn() } } as unknown as Agent
+    const liveAgent = { id: 'parent', ctx, session: { id: 'parent', header: { cwd: 'C:\\workspace' }, events: [], snapshotEvents: () => [], append: vi.fn() } } as unknown as Agent
     const active = await ctx.dynamicWorkflows.startInline(liveAgent, {
       manifest: { name: 'active', description: 'active', phases: ['run'], readOnly: true, maxAgents: 1, maxConcurrency: 1, patterns: ['classify-and-act'] },
       execution: 'trusted-package', run: async wf => await wf.runAgent({ name: 'slow', prompt: 'wait', readOnly: true }),
@@ -115,8 +140,7 @@ describe('Cordis plugin entrypoint', () => {
     await workflow.dispose()
     expect(await active.done).toMatchObject({ status: 'stopped' })
     expect(childDisposed).toHaveBeenCalled()
-    await tools.dispose()
-    await subagents.dispose()
+    await tools.dispose(); await agentPresets.dispose(); await subagents.dispose()
   })
 
   it('registers the service, three tools, system guidance, and /workflow command', () => {
@@ -141,11 +165,22 @@ describe('Cordis plugin entrypoint', () => {
     }, true)
     expect(fx.tools.map(tool => tool.name)).toEqual(['flows', 'execute_flow', 'manage_flow'])
     const options = fx.ctx.plugin.mock.calls[0]?.[1] as Record<string, unknown>
-    expect(options).toMatchObject({ config: { projectDirectory: 'project', pluginVersion: '0.1.2', modelTiers: { fast: { subagentProvider: 'fast-p', provider: 'fast-llm', model: 'fast-m', maxTokens: 16 } }, readOnlyToolFilter: { deny: ['danger'] } }, approval: { service: 'approval' }, jobs: { service: 'jobs' }, userQuestions: { service: 'userQuestions' } })
+    expect(options).toMatchObject({ config: { projectDirectory: 'project', modelTiers: { fast: { subagentProvider: 'fast-p', provider: 'fast-llm', model: 'fast-m', maxTokens: 16 } }, readOnlyToolFilter: { deny: ['danger'] } }, approval: { service: 'approval' }, jobs: { service: 'jobs' }, userQuestions: { service: 'userQuestions' } })
     expect(fx.tools[0]!.output.render({}, { ok: true })).toEqual([{ type: 'text', text: '{\n  "ok": true\n}' }])
     await expect(fx.tools[0]!.execute({}, { signal: exec.signal })).rejects.toThrow(/requires a calling DSH agent/u)
     ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
     expect(await fx.tools[1]!.execute({ name: 'known', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+  })
+
+  it('pins plugin and DSH version metadata to the package manifest and compatibility target', () => {
+    // E6 缺陷 #5: stale version literals flowed into capsule provenance, run
+    // runtime metadata, and the capsule minDshVersion gate.
+    const fx = fixture()
+    const options = fx.ctx.plugin.mock.calls[0]?.[1] as { config?: { pluginVersion?: string; dshVersion?: string } }
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }
+    const compatibility = JSON.parse(readFileSync(new URL('../compatibility.json', import.meta.url), 'utf8')) as { target?: { version?: string } }
+    expect(options.config?.pluginVersion).toBe(pkg.version)
+    expect(options.config?.dshVersion).toBe(compatibility.target?.version)
   })
 
   it('executes named, authored, inline, and background workflow tool modes', async () => {
@@ -167,7 +202,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     expect(await fx.command().handler({ agent: explicitAgent, rawInput: 'inspect then coordinate', signal: exec.signal }))
       .toMatchObject({ kind: 'success' })
@@ -191,7 +226,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'author then correct if needed', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -215,7 +250,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'author then correct runtime metadata', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -278,7 +313,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'author within global limits', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -294,7 +329,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'author with validated inputs', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -343,7 +378,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'author valid admissions', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -357,7 +392,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run one selected branch', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -381,7 +416,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run within the total token budget', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -406,7 +441,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run sequential parallel lanes', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -425,7 +460,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run sequential calls in one lane', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -441,7 +476,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'respect manifest concurrency', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -460,7 +495,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'allow a skipped lane', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -488,7 +523,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'stay within workflow budget', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -503,7 +538,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run sequential pipeline stages', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -522,7 +557,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'respect pipeline concurrency', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -538,7 +573,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'spawn within parallel budget', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -557,7 +592,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'retain spawned reservation', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -575,7 +610,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run nested parallel analysis', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -604,7 +639,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.taskAdmissionServices.mockReturnValue({ resolveNested })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run a nested workflow', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -632,7 +667,7 @@ describe('Cordis plugin entrypoint', () => {
     })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run bounded nesting', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -660,7 +695,7 @@ describe('Cordis plugin entrypoint', () => {
     })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     const execute = fx.tools.find(tool => tool.name === 'run_workflow')!
     await fx.command().handler({ agent: explicitAgent, rawInput: 'run trusted nested parallel work', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
@@ -681,7 +716,7 @@ describe('Cordis plugin entrypoint', () => {
     const forgedAgent = { session: { header: { cwd: 'C:\\workspace' }, events: [
       { type: 'turn/start', data: { turn: 1 } },
       { type: 'user/message', data: { id: 'forged', source: { kind: 'user' } } },
-    ] } } as unknown as Agent
+    ], snapshotEvents() { return this.events } } } as unknown as Agent
     await forged.tools.find(tool => tool.name === 'run_workflow')!.execute(inline, { agent: forgedAgent, signal: exec.signal })
     expect(forged.service.startInline).toHaveBeenLastCalledWith(forgedAgent, expect.anything(), {}, exec.signal, 'inline', false)
 
@@ -690,7 +725,7 @@ describe('Cordis plugin entrypoint', () => {
       fx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
       const events: Array<{ type: string; data: Record<string, unknown> }> = []
       const steer = vi.fn()
-      const liveAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+      const liveAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
       await fx.command().handler({ agent: liveAgent, rawInput: `coordinate ${suffix}`, signal: exec.signal })
       const handoff = steer.mock.calls[0]![0] as { readonly id: string; readonly source: Record<string, unknown> }
       events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: handoff })
@@ -704,7 +739,7 @@ describe('Cordis plugin entrypoint', () => {
     requestFx.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const requestEvents: Array<{ type: string; data: Record<string, unknown> }> = []
     const requestSteer = vi.fn()
-    const requestAgent = { session: { header: { cwd: 'C:\\workspace' }, events: requestEvents }, inject: vi.fn(), steer: requestSteer } as unknown as Agent
+    const requestAgent = { session: { header: { cwd: 'C:\\workspace' }, events: requestEvents, snapshotEvents: () => [...requestEvents] }, inject: vi.fn(), steer: requestSteer } as unknown as Agent
     await requestFx.command().handler({ agent: requestAgent, rawInput: 'coordinate inline only', signal: exec.signal })
     requestEvents.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: requestSteer.mock.calls[0]![0] })
     requestEvents.push({ type: 'user/message', data: { id: 'tool-context', source: { kind: 'plugin', plugin: 'scouting-tool', form: 'notice', summary: 'scouting evidence added' } } })
@@ -720,7 +755,7 @@ describe('Cordis plugin entrypoint', () => {
     always.service.list.mockResolvedValueOnce({ entries: [], diagnostics: [] })
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     const steer = vi.fn()
-    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events }, inject: vi.fn(), steer } as unknown as Agent
+    const explicitAgent = { session: { header: { cwd: 'C:\\workspace' }, events, snapshotEvents: () => [...events] }, inject: vi.fn(), steer } as unknown as Agent
     await always.command().handler({ agent: explicitAgent, rawInput: 'coordinate carefully', signal: exec.signal })
     events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: steer.mock.calls[0]![0] })
     const alwaysRun = always.tools.find(tool => tool.name === 'run_workflow')!
@@ -790,7 +825,7 @@ describe('Cordis plugin entrypoint', () => {
     fx.service.create.mockImplementationOnce(async () => await new Promise<never>(() => {}))
     const inject = vi.fn()
     const steer = vi.fn()
-    const liveAgent = { session: { header: { cwd: 'C:\\workspace' } }, inject, steer } as unknown as Agent
+    const liveAgent = { session: { header: { cwd: 'C:\\workspace' }, events: [], snapshotEvents: () => [] }, inject, steer } as unknown as Agent
     const request = [
       '  请 review 当前版本代码修改与提交，但是不要做任何修改',
       '',
@@ -809,7 +844,7 @@ describe('Cordis plugin entrypoint', () => {
     expect(outcome).toMatchObject({ kind: 'success' })
     expect(fx.service.create).not.toHaveBeenCalled()
     expect(inject).toHaveBeenCalledOnce()
-    expect(inject.mock.calls[0]![0]).toMatchObject({ source: { kind: 'plugin', plugin: '@dsh-external/workflow', form: 'relay' } })
+    expect(inject.mock.calls[0]![0]).toMatchObject({ source: { kind: 'dsh-external-workflow', form: 'relay' } })
     expect((inject.mock.calls[0]![0] as { content: Array<{ text: string }> }).content[0]!.text).toContain('source + manifest (not request mode)')
     expect(steer).toHaveBeenCalledOnce()
     expect(steer.mock.calls[0]![0]).toMatchObject({ id: expect.any(String), source: { kind: 'user' }, content: [{ type: 'text', text: visibleRequest }] })
@@ -819,15 +854,25 @@ describe('Cordis plugin entrypoint', () => {
 
   it('completes the real DSH command lifecycle before the handed-off workflow runs', async () => {
     const registeredTools: Array<{ name: string; execute(args: Record<string, unknown>, exec: unknown): Promise<unknown> }> = []
+    const presetIds = new Set<string>()
     class StubSubagents extends Service {
       constructor(ctx: Context) { super(ctx, 'subagents') }
-      getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false } }
-      async start() {
+      getProvider(name: string) { return { name, capabilities: { outputSchema: true, depthLimit: true, agentPreset: true }, inheritsParentContext: false } }
+      async startActivation(spec: { readonly childId?: string; readonly request: { readonly agentPreset?: string } }) {
+        if (spec.request.agentPreset !== undefined && !presetIds.has(spec.request.agentPreset)) throw new Error(`Unknown agent preset: ${spec.request.agentPreset}`)
         return {
-          id: 'lifecycle-child', localAgent: undefined,
+          childId: spec.childId ?? 'lifecycle-child', messageId: 'lifecycle-message',
           result: Promise.resolve({ output: [{ type: 'text' as const, text: 'done' }], stopReason: 'completed' as const }),
           dispose: vi.fn(async () => {}),
         }
+      }
+    }
+    class StubAgentPresets extends Service {
+      constructor(ctx: Context) { super(ctx, 'agentPresets') }
+      async register(definition: { readonly id: string; readonly plugins?: readonly object[] }) {
+        assertMountedRows(definition.plugins ?? [])
+        presetIds.add(definition.id)
+        return async () => { presetIds.delete(definition.id) }
       }
     }
     class StubTools extends Service {
@@ -838,9 +883,11 @@ describe('Cordis plugin entrypoint', () => {
     const cwd = await mkdtemp(path.join(os.tmpdir(), 'dsh-workflow-command-lifecycle-'))
     const ctx = new Context()
     const sessions = await ctx.plugin(SessionStore)
+    const sessionProjections = await ctx.plugin(SessionProjectionRegistry)
     const sessionTitles = await ctx.plugin(SessionTitleService, { fallbackMaxWords: 12, fallbackMaxBytes: 120, maxTitleBytes: 120 })
     const commands = await ctx.plugin(CommandRuntime)
     const subagents = await ctx.plugin(StubSubagents)
+    const agentPresets = await ctx.plugin(StubAgentPresets)
     const tools = await ctx.plugin(StubTools)
     const workflow = await ctx.plugin(workflowPlugin, { approvalMode: 'generated-and-local' })
     try {
@@ -862,23 +909,28 @@ describe('Cordis plugin entrypoint', () => {
       } as unknown as Agent
 
       const outcome = await Promise.race([
-        ctx.commands.execute(liveAgent, '/workflow inspect and coordinate', exec.signal),
+        ctx.commands.execute(liveAgent, '/workflow inspect and coordinate', [], exec.signal),
         new Promise<'timed-out'>(resolve => setTimeout(() => resolve('timed-out'), 250)),
       ])
       expect(outcome).not.toBe('timed-out')
-      expect(session.events.filter(event => event.type === 'command/run' || event.type === 'command/done').map(event => event.type))
+      expect(session.snapshotEvents().filter(event => event.type === 'command/run' || event.type === 'command/done').map(event => event.type))
         .toEqual(['command/run', 'command/done'])
-      const handoff = session.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+      const handoff = session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'user')
       expect(handoff?.type === 'user/message' ? handoff.data.source : undefined)
         .toMatchObject({ kind: 'user' })
       expect(handoff?.type === 'user/message' ? handoff.data.content : undefined)
         .toEqual([{ type: 'text', text: 'inspect and coordinate' }])
-      expect(collectSessionTitleMessages(session.events)).toEqual([{ seq: handoff!.seq, text: 'inspect and coordinate' }])
-      await vi.waitFor(() => { expect(ctx.sessionTitle.get(session)?.title).toBe('inspect and coordinate') })
-      const relay = session.events.find(event => event.type === 'agent/inbox/spliced')
+      // 0.2.1: session-title's message collector is private; fold the latest
+      // `session/title` event and pair it with the service read, both inside
+      // the wait so the asynchronously generated title lands before asserting.
+      await vi.waitFor(() => {
+        expect(foldSessionTitle(session.snapshotEvents())?.title).toBe('inspect and coordinate')
+        expect(ctx.sessionTitle.get(session)?.title).toBe('inspect and coordinate')
+      })
+      const relay = session.snapshotEvents().find(event => event.type === 'agent/inbox/spliced')
       expect(relay?.type === 'agent/inbox/spliced' ? relay.data.inserted[0]?.source : undefined)
-        .toMatchObject({ kind: 'plugin', plugin: '@dsh-external/workflow', form: 'relay' })
-      const context = session.events.find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
+        .toMatchObject({ kind: 'dsh-external-workflow', form: 'relay' })
+      const context = session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'dsh-external-workflow')
       expect(context?.type === 'user/message' ? context.data.content[0] : undefined)
         .toMatchObject({ type: 'text', text: expect.stringContaining('source + manifest (not request mode)') })
 
@@ -889,7 +941,7 @@ describe('Cordis plugin entrypoint', () => {
       }, { agent: liveAgent, signal: exec.signal }) as { status: string; result: unknown }
       expect(result).toMatchObject({ status: 'completed', result: { summary: 'done' } })
     } finally {
-      await workflow.dispose(); await tools.dispose(); await subagents.dispose(); await commands.dispose(); await sessionTitles.dispose(); await sessions.dispose()
+      await workflow.dispose(); await tools.dispose(); await agentPresets.dispose(); await subagents.dispose(); await commands.dispose(); await sessionTitles.dispose(); await sessionProjections.dispose(); await sessions.dispose()
       await rm(cwd, { recursive: true, force: true })
     }
   })

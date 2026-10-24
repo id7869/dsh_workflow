@@ -71,9 +71,12 @@ ctx.dynamicWorkflows.registerVerificationAdapter({
 })
 
 ctx.dynamicWorkflows.registerDispatchAdapter({
-  async start({ target, effort, provider, request, subagents }) {
+  // Deployments that register a dispatch adapter own the read-only tool scoping
+  // of their routed tasks: the preset roster and restrict injection only cover
+  // local activations started through this plugin directly.
+  async start({ target, effort, spec, subagents }) {
     // Route target/effort through a deployment-specific continuable-agent or model seam.
-    const run = await deploymentDispatch({ target, effort, provider, request, subagents })
+    const run = await deploymentDispatch({ target, effort, spec, subagents })
     return {
       run,
       telemetry: {
