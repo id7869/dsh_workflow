@@ -39,18 +39,18 @@ Example:
     approvalMode: generated-and-local
     maxAgents: 32
     maxConcurrency: 6
-    availableTools: [read, search]
+    availableTools: [read, web_search]
     availableMcp: [github]
     availableSkills: [code-review]
     fastProvider: spawn
-    fastModelProvider: deepseek-official
-    fastModel: fast-model
+    fastMaxTokens: 4096
     deepProvider: spawn
-    deepModelProvider: deepseek-official
-    deepModel: reasoning-model
+    deepMaxTokens: 16384
 ```
 
 `fastProvider`/`balancedProvider`/`deepProvider` name a provider registered on `ctx.subagents` (for example `spawn`, `fork`, `acp`). The corresponding `*ModelProvider` values name DSH LLM provider routes passed in `AgentOptions`. They are deliberately separate; a subagent transport name is never sent to the model router.
+
+Model routing is unlocked by default: leaving `*ModelProvider`/`*Model` empty (the default) omits them from the spawn request, so children inherit the launching session's current model route (DSH 0.2.1 semantics). Pin a deployment LLM route explicitly only when children must not follow the session route.
 
 ## Deployment adapters
 

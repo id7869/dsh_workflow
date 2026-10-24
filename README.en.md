@@ -19,6 +19,17 @@ DSH already provides strong harness primitives. This plugin composes them into d
 
 The native DSH `workflow` tool remains the best fit for a single foreground fan-out. This plugin is the reusable process layer above it.
 
+## What's new in 0.2.0 (2026-10-23)
+
+A full compatibility upgrade to DSH 0.2.1-rc.2, accepted against the real runtime:
+
+- **Runtime surface migration**: child spawning moved to `subagents.startActivation` (`delivery: 'caller'` with reserved child ids), session event reads to `snapshotEvents()`, a self-declared `dsh-external-workflow` message source, session-owned background jobs, the command-execution attachments argument, and tool-result evidence on the new message shape — all aligned with the official 0.2.1 call semantics.
+- **Read-only sub-agent security**: a read-only task now composes a dedicated dynamic agent preset at task start and injects an equal-strength tool restrict before the child's first prompt, preserving the parent-intersected allow-list semantics (see the [safety model](#safety-model)); providers without independent composition fail loudly.
+- **Acceptance**: 187/187 tests green; the compatibility gate (asar fingerprint pins plus tool-workflow projection assertions with twin tamper guards) exits 0; and a real-runtime E2E — four parallel investigators completing with real model usage and cost records.
+- **Install prerequisite**: non-registry first installs (git/tarball/`file:`) need the `allowBuilds` key in the profile's `pnpm-workspace.yaml`; see the note in [Install](#install).
+
+See [CHANGELOG](CHANGELOG.md) for the itemized changes and evidence.
+
 ## Install
 
 Requires Node.js `>=22.19` and the DSH revision pinned in [`compatibility.json`](compatibility.json).

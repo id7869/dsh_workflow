@@ -23,6 +23,17 @@
 
 它不替换 DSH 已有的前台 `workflow` 工具。原生工具适合“这一次把若干工作并行跑完”；本插件负责更高一层的流程产品能力：命名、发现、生成、复用、暂停/恢复、重跑/续跑、持久证据、成本记录和治理。
 
+## v0.2.0：DSH 0.2.1-rc.2 兼容升级（2026-10-23）
+
+本版本对 DSH 0.2.1-rc.2 完成全面兼容性升级，并已在真实运行时整体验收：
+
+- **调用面迁移**：子代理启动改走 `subagents.startActivation`（`delivery: 'caller'` + 预留 childId）、Session 事件读取改用 `snapshotEvents()`、消息源以 `dsh-external-workflow` kind 自声明、后台 job 归属 SessionId、命令执行新增附件参数、tool-result 证据读取适配新消息形态——全部按 0.2.1 官方调用语义落位。
+- **只读子代理安全**：`readOnly` 任务的工具约束改为任务启动时刻动态组合专用 agent preset，并在子代理首个 prompt 前注入同等强度的工具 restrict，父面交集语义与旧版一致（详见[安全与能力边界](#安全与能力边界)）；provider 不支持独立组合时直接失败。
+- **验收口径**：187/187 单测全绿；兼容性门禁（asar 指纹 15 pin + tool-workflow 投影三段断言 + 双篡改挡板）exit 0；真实运行时 E2E——四子代理并行调查任务终态 completed、真实模型调用与成本全部留痕。
+- **安装前置**：非 registry 形态（git/tarball/`file:`）首次安装需在 profile `pnpm-workspace.yaml` 加 `allowBuilds` 键，见[快速开始](#快速开始)中的说明。
+
+逐项变更与证据见 [CHANGELOG](CHANGELOG.md)。
+
 ## 它为 DSH 带来什么
 
 DSH 已经有很强的 Harness 基础设施：模型路由、子 Agent provider、工具权限、审批、Session 日志、后台 jobs 与 UI 事件。但仅有这些“执行原语”，团队仍需在每次会话里重新描述如何拆解、并发、验证和汇总。
@@ -175,14 +186,11 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
     maxAgents: 64
     maxConcurrency: 8
     maxRetainedRuns: 500
-    fastProvider: spawn              # ctx.subagents transport
-    fastModelProvider: deepseek-official
+    fastProvider: spawn             # ctx.subagents 传输
     fastMaxTokens: 4096
-    balancedProvider: spawn          # ctx.subagents transport
-    balancedModelProvider: deepseek-official
+    balancedProvider: spawn          # ctx.subagents 传输
     balancedMaxTokens: 8192
-    deepProvider: spawn              # ctx.subagents transport
-    deepModelProvider: deepseek-official
+    deepProvider: spawn              # ctx.subagents 传输
     deepMaxTokens: 16384
     readOnlyAllowedTools:       # 与当前父 Agent 可见工具动态求交集
       - read
@@ -195,6 +203,8 @@ workflow 启动和 `run_workflow` 默认立即返回 `{ runId, status, jobId? }`
 ```
 
 `availableTools`、`availableMcp`、`availableSkills` 是部署能力清单，供 capsule preflight 使用。workflow 声明的 requirement 不在清单中时会失败，不会偷偷降级。
+
+模型路由默认不锁定：`fastModelProvider`/`fastModel` 等字段留空（默认）时，spawn 请求不携带 provider/model，子代理继承发起会话的当前模型路由（DSH 0.2.1 语义）；需要固定时按部署 LLM 路由名显式填写。
 
 ## 安全与能力边界
 

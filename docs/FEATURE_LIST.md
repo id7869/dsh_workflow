@@ -2,25 +2,28 @@
 
 ## Version Info
 
-- Current Release: v0.1.2
+- Current Release: v0.2.0
 - Planned Version: none
-- Last Updated: 2026-08-13
+- Last Updated: 2026-10-23
 
 ## Version Summary
 
 | Version | Status | Progress |
 | --- | --- | ---: |
+| v0.2.0 | Complete | 2/2 |
 | v0.1.2 | Complete | 1/1 |
 | v0.1.1 | Complete | 1/1 |
 | v0.1.0 | Complete | 1/1 |
 
 ## Feature Index
 
-| ID | Title | Category | Priority | Status | Planned | Design |
-| --- | --- | --- | --- | --- | --- | --- |
-| 001 | KodaX-parity workflow orchestration | New | Critical | Complete | v0.1.0 | [Design](features/v0.1.0.md#feature_001-kodax-parity-workflow-orchestration) |
-| 002 | Visible workflow handoff and session title integration | Fix | High | Complete | v0.1.1 | [Design](features/v0.1.1.md#feature_002-visible-workflow-handoff-and-session-title-integration) |
-| 003 | Reliable handoff preflight and background lifecycle projection | Fix | Critical | Complete | v0.1.2 | [Design](features/v0.1.2.md#feature_003-reliable-handoff-preflight-and-background-lifecycle-projection) |
+| ID | Title | Category | Priority | Status | Released |
+| --- | --- | --- | --- | --- | --- |
+| 001 | KodaX-parity workflow orchestration | New | Critical | Complete | v0.1.0 |
+| 002 | Visible workflow handoff and session title integration | Fix | High | Complete | v0.1.1 |
+| 003 | Reliable handoff preflight and background lifecycle projection | Fix | Critical | Complete | v0.1.2 |
+| 004 | DSH 0.2.1-rc.2 compatibility upgrade | Upgrade | Critical | Complete | v0.2.0 |
+| 005 | Read-only sub-agent security via dynamic tool composition | New | Critical | Complete | v0.2.0 |
 
 ## Feature Details
 
@@ -30,10 +33,7 @@
 - Category: New
 - Priority: Critical
 - Status: Complete
-- Planned: v0.1.0
-- Created: 2026-08-13
-- Started: 2026-08-13
-- Released: 2026-08-13
+- Released: v0.1.0 (2026-08-13)
 
 ### FEATURE_002: Visible workflow handoff and session title integration
 
@@ -41,10 +41,7 @@
 - Category: Fix
 - Priority: High
 - Status: Complete
-- Planned: v0.1.1
-- Created: 2026-08-13
-- Started: 2026-08-13
-- Released: 2026-08-13
+- Released: v0.1.1 (2026-08-13)
 
 ### FEATURE_003: Reliable handoff preflight and background lifecycle projection
 
@@ -52,14 +49,27 @@
 - Category: Fix
 - Priority: Critical
 - Status: Complete
-- Planned: v0.1.2
-- Created: 2026-08-13
-- Started: 2026-08-13
-- Released: 2026-08-13
+- Released: v0.1.2 (2026-08-13)
+
+### FEATURE_004: DSH 0.2.1-rc.2 compatibility upgrade
+
+- Description: Migrate every runtime call surface to the DSH 0.2.1-rc.2 official semantics (subagents.startActivation with reserved child ids, snapshotEvents session reads, self-declared dsh-external-workflow message sources, session-owned background jobs, command-execution attachments, tool-result message shape) and rebuild the compatibility gate on the installed app.asar fingerprint plus official npm artifact assertions with twin tamper guards.
+- Category: Upgrade
+- Priority: Critical
+- Status: Complete
+- Released: v0.2.0 (2026-10-23)
+
+### FEATURE_005: Read-only sub-agent security via dynamic tool composition
+
+- Description: Read-only children compose a per-task dynamic agent preset derived from the parent-intersected allow-list and receive a name-level tool restrict before their first prompt, preserving the read-only guarantee on the 0.2.1 preset-composition model; providers without independent composition fail loudly.
+- Category: New
+- Priority: Critical
+- Status: Complete
+- Released: v0.2.0 (2026-10-23)
 
 ## Summary
 
-- Total: 3
+- Total: 5
 - In Progress: 0
 - Planned: 0
-- Completed: 3
+- Completed: 5
