@@ -2,14 +2,15 @@
 
 ## Version Info
 
-- Current Release: v0.2.0
+- Current Release: v0.2.1
 - Planned Version: none
-- Last Updated: 2026-10-23
+- Last Updated: 2026-10-26
 
 ## Version Summary
 
 | Version | Status | Progress |
 | --- | --- | ---: |
+| v0.2.1 | Complete | 1/1 |
 | v0.2.0 | Complete | 2/2 |
 | v0.1.2 | Complete | 1/1 |
 | v0.1.1 | Complete | 1/1 |
@@ -24,6 +25,7 @@
 | 003 | Reliable handoff preflight and background lifecycle projection | Fix | Critical | Complete | v0.1.2 |
 | 004 | DSH 0.2.1-rc.2 compatibility upgrade | Upgrade | Critical | Complete | v0.2.0 |
 | 005 | Read-only sub-agent security via dynamic tool composition | New | Critical | Complete | v0.2.0 |
+| 006 | DSH 0.2.1-rc.3 compatibility realignment | Upgrade | High | Complete | v0.2.1 |
 
 ## Feature Details
 
@@ -67,9 +69,17 @@
 - Status: Complete
 - Released: v0.2.0 (2026-10-23)
 
+### FEATURE_006: DSH 0.2.1-rc.3 compatibility realignment
+
+- Description: Repin every DSH peer and dev dependency to 0.2.1-rc.3 and refresh the compatibility gate (target, source tag, pins, npm artifact integrity, testedAt) after the desktop runtime updated to rc.3. The rc.2→rc.3 source diff over the 24 contact-surface packages is version-line-only, so the rc.2-verified call surfaces carry over unchanged; the documented DSH-upgrade realignment procedure was executed end to end.
+- Category: Upgrade
+- Priority: High
+- Status: Complete
+- Released: v0.2.1 (2026-10-26)
+
 ## Summary
 
-- Total: 5
+- Total: 6
 - In Progress: 0
 - Planned: 0
-- Completed: 5
+- Completed: 6
