@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import { createWorkflowCapsule, validateWorkflowArgs, validateWorkflowManifest } from './capsule.js'
 import { smokeWorkflowCapsule } from './author.js'
+import { coerceToolJson } from './tool-json.js'
 import { scopedReviewWorkflow, writeReviewPackets } from './scoped-review.js'
 import { DynamicWorkflowService } from './service.js'
 import type { ModelTierRoute, ResolvedWorkflowConfig, WorkflowModule, WorkflowRun, WorkflowRunSnapshot, WorkflowToolPackageRow } from './types.js'
@@ -210,17 +211,6 @@ function parseJsonOrText(raw: string): unknown {
     try { return JSON.parse(trimmed) as unknown } catch { return { question: trimmed } }
   }
   return { question: trimmed }
-}
-
-/**
- * Tool parameters declared `type: 'json'` are not parsed per argument by the
- * DSH tool layer (upstream gap, 09-排查报告 Finding A): a model may deliver
- * the value as a JSON string. Objects pass through; strings parse; a string
- * that is not valid JSON fails loudly instead of reaching capsule validation.
- */
-function coerceToolJson(value: unknown, label: string): unknown {
-  if (typeof value !== 'string') return value
-  try { return JSON.parse(value) as unknown } catch (error) { throw new Error(`${label} must be valid JSON when delivered as a string: ${error instanceof Error ? error.message : String(error)}`) }
 }
 
 type WorkflowHandoffGrants = WeakMap<Agent, string>
@@ -626,8 +616,8 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
       name: { type: 'string', description: 'Saved, built-in, or pattern workflow name.' },
       request: { type: 'string', description: 'Task request for scout-then-author workflow generation.' },
       source: { type: 'string', description: 'Capability-only JavaScript defining async function run(wf, args).' },
-      manifest: { type: 'json', description: 'Strict workflow manifest for inline source.' },
-      args: { type: 'json', description: 'JSON arguments supplied to the workflow.' },
+      manifest: { type: 'object', additionalProperties: true, description: 'Strict workflow manifest for inline source.' },
+      args: { type: 'object', additionalProperties: true, description: 'JSON arguments supplied to the workflow.' },
       wait: { type: 'boolean', description: 'Wait for the terminal outcome. Default false: return the durable process immediately.' },
       background: { type: 'boolean', description: 'Deprecated compatibility flag. false is equivalent to wait=true.' },
       save_scope: { type: 'string', enum: ['project', 'personal'], description: 'Save an authored request workflow before running it.' },
@@ -667,7 +657,7 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
     description: 'Inspect and control durable workflow processes: runs/show/pause/resume/stop/rerun/resume-run/save/rename-run/rename-saved/revise/delete-run/delete-saved/prune.',
     parameters: {
       action: { type: 'string', required: true, enum: ['runs', 'show', 'pause', 'resume', 'stop', 'rerun', 'resume-run', 'save', 'rename-run', 'rename-saved', 'revise', 'delete-run', 'delete-saved', 'prune'] },
-      target: { type: 'string' }, name: { type: 'string' }, value: { type: 'string' }, args: { type: 'json' }, wait: { type: 'boolean' },
+      target: { type: 'string' }, name: { type: 'string' }, value: { type: 'string' }, args: { type: 'object', additionalProperties: true }, wait: { type: 'boolean' },
       scope: { type: 'string', enum: ['project', 'personal'] }, force: { type: 'boolean' }, dry_run: { type: 'boolean' }, keep: { type: 'integer' }, older_than_days: { type: 'integer' }, background: { type: 'boolean' },
     },
     output: { schema: { type: 'json' }, render: (_args, value) => render(value) },

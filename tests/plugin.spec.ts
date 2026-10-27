@@ -12,6 +12,8 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionTitleService, { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { describe, expect, it, vi } from 'vitest'
 import workflowPlugin, { apply, name, type Config } from '../src/index.js'
+import { coerceToolJson } from '../src/tool-json.js'
+import { validateArgs } from '@deepseek-ai/dsh-tools'
 import type { WorkflowRun, WorkflowRunSnapshot } from '../src/types.js'
 
 const execFileAsync = promisify(execFile)
@@ -79,6 +81,45 @@ const smokeableInlineSource = `async function run(wf, args) {
 }`
 
 describe('Cordis plugin entrypoint', () => {
+  it('declares manifest and args as object schemas so string delivery fails pre-execute validation (Finding A, declaration layer)', async () => {
+    // The upstream gap: 'json' compiles to an untyped schema node, so
+    // validateArgs lets a string through untouched. The 'object' declaration
+    // compiles to a typed node and the tool wrapper rejects string delivery
+    // before execute, with violations the model can self-correct from.
+    const fx = fixture()
+    const runTool = fx.tools.find(tool => tool.name === 'run_workflow') as unknown as { parameters: { properties: Record<string, { type?: string; additionalProperties?: boolean }> } }
+    expect(runTool.parameters.properties.manifest).toMatchObject({ type: 'object', additionalProperties: true })
+    expect(runTool.parameters.properties.args).toMatchObject({ type: 'object', additionalProperties: true })
+    // Spec-level mirror of the src declaration: object spec flags strings,
+    // the legacy 'json' spec flags nothing (the gap, pinned as a test fact).
+    const declared = { manifest: { type: 'object' as const, additionalProperties: true }, args: { type: 'object' as const, additionalProperties: true } }
+    const legacy = { manifest: { type: 'json' as const }, args: { type: 'json' as const } }
+    expect(validateArgs(declared, { manifest: '{"name":"x"}', args: '{"request":"go"}' }).length).toBeGreaterThan(0)
+    expect(validateArgs(legacy, { manifest: '{"name":"x"}', args: '{"request":"go"}' })).toEqual([])
+    expect(validateArgs(declared, { manifest: { name: 'x' }, args: { request: 'go' } })).toEqual([])
+    // End to end through the registered definition: a string delivery is
+    // rejected by the wrapper before execute runs.
+    await expect(fx.tools[1]!.execute({ name: 'known', args: '{"question":"hi"}', background: true }, exec)).rejects.toThrow(/must be an object/u)
+    expect(fx.service.startNamed).not.toHaveBeenCalled()
+  })
+
+  it('coerces string-delivered JSON in the execute fallback (Finding A, coercion layer)', () => {
+    // Defense for callers that reach execute without the wrapper validation:
+    // older DSH versions, tests, programmatic calls.
+    expect(coerceToolJson({ question: 'hi' }, 'args')).toEqual({ question: 'hi' })
+    expect(coerceToolJson('{"question":"hi"}', 'args')).toEqual({ question: 'hi' })
+    expect(coerceToolJson(undefined, 'args')).toBeUndefined()
+    expect(() => coerceToolJson('nope', 'args')).toThrow(/args must be valid JSON/u)
+    expect(() => coerceToolJson('{not json', 'manifest')).toThrow(/manifest must be valid JSON/u)
+  })
+
+  it('passes object args through to the service unchanged (V1 wiring)', async () => {
+    const fx = fixture()
+    ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
+    expect(await fx.tools[1]!.execute({ name: 'known', args: { question: 'hi' }, background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+    expect(fx.service.startNamed).toHaveBeenCalledOnce()
+    expect(fx.service.startNamed.mock.calls[0]?.[2]).toEqual({ question: 'hi' })
+  })
   it('publishes its service before installing dependent surfaces in a real Cordis context', async () => {
     const registered: unknown[] = []
     class StubSubagents extends Service {
@@ -172,32 +213,6 @@ describe('Cordis plugin entrypoint', () => {
     expect(await fx.tools[1]!.execute({ name: 'known', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
   })
 
-  it('coerces a string-delivered args value into the parsed object for named runs (Finding A, V2)', async () => {
-    const fx = fixture()
-    ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
-    expect(await fx.tools[1]!.execute({ name: 'known', args: '{"question":"hi"}', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
-    expect(fx.service.startNamed).toHaveBeenCalledOnce()
-    expect(fx.service.startNamed.mock.calls[0]?.[2]).toEqual({ question: 'hi' })
-  })
-
-  it('coerces a string-delivered inline manifest into the parsed object (Finding A, V2 inline)', async () => {
-    const fx = fixture()
-    ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
-    const manifest = JSON.stringify({ name: 'inline-coerced', description: 'coerced inline workflow', phases: ['run'], readOnly: true, maxAgents: 1, maxConcurrency: 1, patterns: ['classify-and-act'] })
-    expect(await fx.tools[1]!.execute({ source: 'async function run(wf, args) { return 1; }', manifest, args: '{"request":"go"}', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
-    expect(fx.service.startInline).toHaveBeenCalledOnce()
-    expect(fx.service.startInline.mock.calls[0]?.[1]?.manifest?.name).toBe('inline-coerced')
-    expect(fx.service.startInline.mock.calls[0]?.[2]).toEqual({ request: 'go' })
-  })
-
-  it('fails loudly when a string-delivered manifest or args value is not valid JSON (Finding A, V3)', async () => {
-    const fx = fixture()
-    await expect(fx.tools[1]!.execute({ source: 'async function run(wf, args) { return 1; }', manifest: '{not json', background: true }, exec)).rejects.toThrow(/manifest must be valid JSON/u)
-    await expect(fx.tools[1]!.execute({ name: 'known', args: 'nope', background: true }, exec)).rejects.toThrow(/args must be valid JSON/u)
-    expect(fx.service.startInline).not.toHaveBeenCalled()
-    expect(fx.service.startNamed).not.toHaveBeenCalled()
-  })
-
   it('pins plugin and DSH version metadata to the package manifest and compatibility target', () => {
     // E6 缺陷 #5: stale version literals flowed into capsule provenance, run
     // runtime metadata, and the capsule minDshVersion gate.
@@ -286,10 +301,9 @@ describe('Cordis plugin entrypoint', () => {
       source: `async function run(wf, args) {
         void args;
         await wf.phase('analyze', async () => await wf.runAgent({ name: 'analyst', prompt: 'analyze', readOnly: true, modelHint: 'balanced' }));
-        return await wf.phase('verify', async () => await wf.runAgent({ name: 'verifier', prompt: 'verify', readOnly: true, modelHint: args === null ? 'powerful' : 'deep' }));
+        return await wf.phase('verify', async () => await wf.runAgent({ name: 'verifier', prompt: 'verify', readOnly: true, modelHint: 'powerful' }));
       }`,
       manifest,
-      args: null,
     }, { agent: explicitAgent, signal: exec.signal })).rejects.toThrow(/modelHint must be fast, balanced, or deep/u)
     expect(fx.service.startInline).not.toHaveBeenCalled()
 
@@ -300,9 +314,8 @@ describe('Cordis plugin entrypoint', () => {
         return await wf.phase('verify', async () => await wf.runAgent({ name: 'verifier', prompt: 'verify', readOnly: true, modelHint: 'deep' }));
       }`,
       manifest,
-      args: null,
     }, { agent: explicitAgent, signal: exec.signal })
-    expect(fx.service.startInline).toHaveBeenLastCalledWith(explicitAgent, expect.anything(), null, exec.signal, 'inline', true)
+    expect(fx.service.startInline).toHaveBeenLastCalledWith(explicitAgent, expect.anything(), undefined, exec.signal, 'inline', true)
   })
 
   it.each([
