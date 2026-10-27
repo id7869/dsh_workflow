@@ -212,6 +212,17 @@ function parseJsonOrText(raw: string): unknown {
   return { question: trimmed }
 }
 
+/**
+ * Tool parameters declared `type: 'json'` are not parsed per argument by the
+ * DSH tool layer (upstream gap, 09-排查报告 Finding A): a model may deliver
+ * the value as a JSON string. Objects pass through; strings parse; a string
+ * that is not valid JSON fails loudly instead of reaching capsule validation.
+ */
+function coerceToolJson(value: unknown, label: string): unknown {
+  if (typeof value !== 'string') return value
+  try { return JSON.parse(value) as unknown } catch (error) { throw new Error(`${label} must be valid JSON when delivered as a string: ${error instanceof Error ? error.message : String(error)}`) }
+}
+
 type WorkflowHandoffGrants = WeakMap<Agent, string>
 
 function handoffWorkflowRequest(agent: Agent, request: string, grants: WorkflowHandoffGrants): CommandResult {
@@ -624,6 +635,8 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
     output: { schema: { type: 'json' }, render: (_args, value) => render(value) },
     async execute(args, exec) {
       const agent = requireAgent(exec.agent)
+      const manifest = args.manifest === undefined ? undefined : coerceToolJson(args.manifest, 'manifest')
+      const toolArgs = args.args === undefined ? undefined : coerceToolJson(args.args, 'args')
       const selected = [args.name, args.request, args.source].filter(value => value !== undefined)
       if (selected.length !== 1) throw new Error('run_workflow requires exactly one of name, request, or source')
       const currentHandoff = hasCurrentWorkflowHandoff(agent, workflowHandoffGrants)
@@ -631,19 +644,19 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
         throw new Error('a /workflow command handoff must author inline source + manifest in the current Agent; request mode would start a second scout/author pipeline')
       }
       let run: WorkflowRun
-      if (args.name !== undefined) run = await service.startNamed(agent, args.name, args.args, exec.signal)
+      if (args.name !== undefined) run = await service.startNamed(agent, args.name, toolArgs, exec.signal)
       else if (args.request !== undefined) {
         const authored = await service.create(agent, args.request, exec.signal, args.save_scope === undefined ? undefined : { scope: args.save_scope })
-        run = await service.startInline(agent, { manifest: authored.capsule.manifest, execution: 'capability-generated', source: authored.capsule.source, capsule: authored.capsule }, args.args, exec.signal, 'inline', false)
+        run = await service.startInline(agent, { manifest: authored.capsule.manifest, execution: 'capability-generated', source: authored.capsule.source, capsule: authored.capsule }, toolArgs, exec.signal, 'inline', false)
       } else {
-        if (args.manifest === undefined) throw new Error('inline workflow source requires manifest')
-        const module = inlineModule(args.source!, args.manifest, resolved)
+        if (manifest === undefined) throw new Error('inline workflow source requires manifest')
+        const module = inlineModule(args.source!, manifest, resolved)
         if (currentHandoff && module.capsule !== undefined) {
-          validateWorkflowArgs(module.capsule, args.args === undefined ? {} : args.args)
-          await smokeWorkflowCapsule(module.capsule, resolved, args.args, service.taskAdmissionServices(agent))
+          validateWorkflowArgs(module.capsule, toolArgs === undefined ? {} : toolArgs)
+          await smokeWorkflowCapsule(module.capsule, resolved, toolArgs, service.taskAdmissionServices(agent))
         }
         const explicitIntent = consumeCurrentWorkflowHandoff(agent, workflowHandoffGrants) && resolved.approvalMode !== 'always'
-        run = await service.startInline(agent, module, args.args, exec.signal, 'inline', explicitIntent)
+        run = await service.startInline(agent, module, toolArgs, exec.signal, 'inline', explicitIntent)
       }
       return await runResult(service, agent, run, args.wait === true || args.background === false) as never
     },
@@ -661,6 +674,7 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
     async execute(args, exec) {
       const agent = requireAgent(exec.agent)
       const target = args.target ?? ''
+      const toolArgs = args.args === undefined ? undefined : coerceToolJson(args.args, 'args')
       switch (args.action) {
         case 'runs': return JSON.parse(JSON.stringify(service.runs(agent))) as never
         case 'show': return JSON.parse(JSON.stringify(service.show(agent, target) ?? null)) as never
@@ -669,7 +683,7 @@ function installSurfaces(ctx: Context, resolved: ResolvedPluginConfig): void {
         case 'stop': return { accepted: service.stop(agent, target, args.value) } as never
         case 'rerun':
         case 'resume-run': {
-          const run = await service.rerun(agent, target, args.args, exec.signal, args.action === 'resume-run')
+          const run = await service.rerun(agent, target, toolArgs, exec.signal, args.action === 'resume-run')
           return await runResult(service, agent, run, args.wait === true || args.background === false) as never
         }
         case 'save': return { path: await service.saveRun(agent, target, args.name ?? '', args.scope ?? 'project', args.force === true) } as never

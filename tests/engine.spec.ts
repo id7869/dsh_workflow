@@ -95,7 +95,8 @@ async function fixture(options: {
   readonly config?: Partial<ResolvedWorkflowConfig>
   readonly fake?: FakeSubagents
   readonly resolveNested?: (name: string) => Promise<{ module: WorkflowModule; source: WorkflowStartInput['source'] }>
-  readonly approval?: { request(): Promise<'allowed-once' | 'denied'> }
+  readonly approval?: { request(): Promise<'allowed-once' | 'denied' | 'rejected' | 'unavailable' | 'cancelled'> }
+  readonly confirmApproval?: (agent: unknown, question: string, detail: string, signal?: AbortSignal) => Promise<boolean>
   readonly verification?: WorkflowVerificationAdapter
   readonly isolation?: WorktreeIsolationAdapter
   readonly deploymentSemaphore?: WorkflowSemaphore
@@ -111,6 +112,7 @@ async function fixture(options: {
     subagents: fake.service, config: config(options.config), store,
     resolveNested: options.resolveNested ?? (async () => { throw new Error('nested workflow not found') }),
     ...(options.approval === undefined ? {} : { approval: options.approval as never }),
+    ...(options.confirmApproval === undefined ? {} : { confirmApproval: options.confirmApproval as never }),
     ...(options.verification === undefined ? {} : { verification: options.verification }),
     ...(options.isolation === undefined ? {} : { isolation: options.isolation }),
     ...(options.deploymentSemaphore === undefined ? {} : { deploymentSemaphore: options.deploymentSemaphore }),
@@ -514,6 +516,46 @@ describe('dynamic workflow engine', () => {
     expect(result.status).toBe('denied')
     expect(approval.request).toHaveBeenCalledOnce()
     expect(fx.fake.starts).not.toHaveBeenCalled()
+  })
+
+  it('degrades an unavailable approval to the user-questions confirm card and runs when confirmed (Finding B)', async () => {
+    const approval = { request: vi.fn(async () => 'unavailable' as const) }
+    const confirmApproval = vi.fn(async () => true)
+    const fx = await fixture({ source: `async function run(wf, args) { return await wf.runAgent({ name: 'degraded', prompt: 'go' }); }`, config: { approvalMode: 'generated-and-local' }, approval, confirmApproval })
+    const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
+    expect(result.status).toBe('completed')
+    expect(approval.request).toHaveBeenCalledOnce()
+    expect(confirmApproval).toHaveBeenCalledOnce()
+    expect(fx.fake.starts).toHaveBeenCalled()
+  })
+
+  it('denies with a rejection record when the degraded confirmation is refused', async () => {
+    const approval = { request: vi.fn(async () => 'unavailable' as const) }
+    const confirmApproval = vi.fn(async () => false)
+    const fx = await fixture({ source: `async function run(wf, args) { return await wf.runAgent({ name: 'refused', prompt: 'no' }); }`, config: { approvalMode: 'generated-and-local' }, approval, confirmApproval })
+    const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
+    expect(result.status).toBe('denied')
+    expect(result.error).toBe('workflow approval rejected')
+    expect(confirmApproval).toHaveBeenCalledOnce()
+    expect(fx.fake.starts).not.toHaveBeenCalled()
+  })
+
+  it('never degrades a deterministic refusal: a rejected outcome skips the confirm card entirely (V6)', async () => {
+    const approval = { request: vi.fn(async () => 'rejected' as const) }
+    const confirmApproval = vi.fn(async () => true)
+    const fx = await fixture({ source: `async function run(wf, args) { return await wf.runAgent({ name: 'never-degrade', prompt: 'no' }); }`, config: { approvalMode: 'always' }, approval, confirmApproval })
+    const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
+    expect(result.status).toBe('denied')
+    expect(result.error).toBe('workflow approval rejected')
+    expect(confirmApproval).not.toHaveBeenCalled()
+  })
+
+  it('keeps the fail-closed denial when no confirmation provider exists (headless)', async () => {
+    const approval = { request: vi.fn(async () => 'unavailable' as const) }
+    const fx = await fixture({ source: `async function run(wf, args) { return await wf.runAgent({ name: 'headless', prompt: 'go' }); }`, config: { approvalMode: 'generated-and-local' }, approval })
+    const result = await (await fx.engine.start({ module: fx.module, source: 'inline', parent: fx.parent })).done
+    expect(result.status).toBe('denied')
+    expect(result.error).toBe('workflow approval unavailable')
   })
 
   it('publishes spawned agents before live messaging and applies isolation, verification, and real usage', async () => {

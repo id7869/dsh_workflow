@@ -89,6 +89,15 @@ export interface WorkflowEngineDependencies {
   readonly store: WorkflowRunStore
   readonly approval?: ApprovalService
   readonly userInteractionAvailable?: boolean
+  /**
+   * Two-stage approval fallback (09-排查报告 Finding B): when the approval
+   * seam fail-closes with `unavailable` (no answerer covers callId-less
+   * requests in this deployment), the run degrades to the same user-questions
+   * confirm card trusted-local workflows already use. Other outcomes
+   * (`rejected`, `cancelled`, policy `never`) never degrade — they deny
+   * directly, preserving the seam's deterministic refusals and audit trail.
+   */
+  readonly confirmApproval?: (agent: Agent, question: string, detail: string, signal?: AbortSignal) => Promise<boolean>
   readonly verification?: WorkflowVerificationAdapter
   readonly isolation?: WorktreeIsolationAdapter
   readonly dispatch?: WorkflowDispatchAdapter
@@ -661,9 +670,15 @@ export class DynamicWorkflowEngine {
       if (this.needsApproval(run.input)) {
         if (this.deps.approval === undefined) throw new Error('workflow approval is required but the DSH approval service is unavailable')
         const outcome = await this.deps.approval.request({ agent: run.input.parent, toolName: 'run_workflow', reason: preflight.approvalSummary, signal: run.controller.signal })
-        if (outcome !== 'allowed-once') {
-          run.snapshot = { ...run.snapshot, status: 'denied', error: `workflow approval ${outcome}` }
-          this.emit(run, 'workflow-stopped', { reason: `approval ${outcome}` })
+        let allowed = outcome === 'allowed-once'
+        let denial = `workflow approval ${outcome}`
+        if (!allowed && outcome === 'unavailable' && this.deps.confirmApproval !== undefined) {
+          allowed = await this.deps.confirmApproval(run.input.parent, `Run workflow "${run.snapshot.workflow}"?`, 'The workflow may start multiple DSH child agents. Normal permission gates still apply.', run.controller.signal)
+          if (!allowed) denial = 'workflow approval rejected'
+        }
+        if (!allowed) {
+          run.snapshot = { ...run.snapshot, status: 'denied', error: denial }
+          this.emit(run, 'workflow-stopped', { reason: denial.replace(/^workflow /u, '') })
           return this.finish(run)
         }
       }

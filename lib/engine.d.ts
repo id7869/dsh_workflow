@@ -19,6 +19,15 @@ export interface WorkflowEngineDependencies {
     readonly store: WorkflowRunStore;
     readonly approval?: ApprovalService;
     readonly userInteractionAvailable?: boolean;
+    /**
+     * Two-stage approval fallback (09-排查报告 Finding B): when the approval
+     * seam fail-closes with `unavailable` (no answerer covers callId-less
+     * requests in this deployment), the run degrades to the same user-questions
+     * confirm card trusted-local workflows already use. Other outcomes
+     * (`rejected`, `cancelled`, policy `never`) never degrade — they deny
+     * directly, preserving the seam's deterministic refusals and audit trail.
+     */
+    readonly confirmApproval?: (agent: Agent, question: string, detail: string, signal?: AbortSignal) => Promise<boolean>;
     readonly verification?: WorkflowVerificationAdapter;
     readonly isolation?: WorktreeIsolationAdapter;
     readonly dispatch?: WorkflowDispatchAdapter;

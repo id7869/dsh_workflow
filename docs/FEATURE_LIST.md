@@ -2,14 +2,15 @@
 
 ## Version Info
 
-- Current Release: v0.2.1
+- Current Release: v0.2.2
 - Planned Version: none
-- Last Updated: 2026-10-26
+- Last Updated: 2026-10-27
 
 ## Version Summary
 
 | Version | Status | Progress |
 | --- | --- | ---: |
+| v0.2.2 | Complete | 2/2 |
 | v0.2.1 | Complete | 1/1 |
 | v0.2.0 | Complete | 2/2 |
 | v0.1.2 | Complete | 1/1 |
@@ -26,6 +27,8 @@
 | 004 | DSH 0.2.1-rc.2 compatibility upgrade | Upgrade | Critical | Complete | v0.2.0 |
 | 005 | Read-only sub-agent security via dynamic tool composition | New | Critical | Complete | v0.2.0 |
 | 006 | DSH 0.2.1-rc.3 compatibility realignment | Upgrade | High | Complete | v0.2.1 |
+| 007 | Tool-entry JSON coercion for string-delivered parameters | Fix | Critical | Complete | v0.2.2 |
+| 008 | Approval degradation to the user confirm card on unavailable | Fix | Critical | Complete | v0.2.2 |
 
 ## Feature Details
 
@@ -77,9 +80,25 @@
 - Status: Complete
 - Released: v0.2.1 (2026-10-26)
 
+### FEATURE_007: Tool-entry JSON coercion for string-delivered parameters
+
+- Description: run_workflow's manifest/args and workflow_manage's args, declared type:'json', are not parsed per argument by the DSH tool layer (upstream gap), so models that double-encode them as strings reached capsule validation raw and failed with "manifest must be an object". The tool entry now coerces: objects pass through, JSON strings parse, and non-JSON strings fail loudly with the parameter named.
+- Category: Fix
+- Priority: Critical
+- Status: Complete
+- Released: v0.2.2 (2026-10-27)
+
+### FEATURE_008: Approval degradation to the user confirm card on unavailable
+
+- Description: When the approval seam fail-closes with `unavailable` (no answerer covers callId-less pre-start requests in the deployment), a capability-generated workflow now degrades to the same user-questions confirm card trusted-local workflows use. Deterministic refusals (rejected, cancelled, policy never) never degrade — they deny directly, preserving the seam's audit trail and strict headless stance.
+- Category: Fix
+- Priority: Critical
+- Status: Complete
+- Released: v0.2.2 (2026-10-27)
+
 ## Summary
 
-- Total: 6
+- Total: 8
 - In Progress: 0
 - Planned: 0
-- Completed: 6
+- Completed: 8

@@ -47,7 +47,7 @@ function fixture(pluginConfig: Config = { approvalMode: 'never', maxAgents: 7, m
   const service = {
     list: vi.fn(async () => ({ entries: [{ name: 'known', valid: true }], diagnostics: [] })),
     taskAdmissionServices: vi.fn(() => ({})),
-    startNamed: vi.fn(async () => run()), startInline: vi.fn(async () => run()),
+    startNamed: vi.fn(async (_agent: unknown, _name: string, _args?: unknown) => run()), startInline: vi.fn(async (_agent: unknown, _module: { manifest?: { name?: string } }, _args?: unknown) => run()),
     create: vi.fn(async () => ({ capsule: { manifest: { name: 'created', description: 'created', phases: ['run'], readOnly: true, maxAgents: 1, maxConcurrency: 1, patterns: ['classify-and-act'] }, source: 'async function run(wf, args) { return true; }' }, warnings: [] })),
     rerun: vi.fn(async () => run({ source: 'run-snapshot' })), attachBackgroundJob: vi.fn(() => 'workflow-1'),
     runs: vi.fn(() => [snapshot()]), show: vi.fn(() => snapshot()), events: vi.fn(() => []), pause: vi.fn(() => true), resume: vi.fn(() => true), stop: vi.fn(() => true),
@@ -170,6 +170,32 @@ describe('Cordis plugin entrypoint', () => {
     await expect(fx.tools[0]!.execute({}, { signal: exec.signal })).rejects.toThrow(/requires a calling DSH agent/u)
     ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
     expect(await fx.tools[1]!.execute({ name: 'known', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+  })
+
+  it('coerces a string-delivered args value into the parsed object for named runs (Finding A, V2)', async () => {
+    const fx = fixture()
+    ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
+    expect(await fx.tools[1]!.execute({ name: 'known', args: '{"question":"hi"}', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+    expect(fx.service.startNamed).toHaveBeenCalledOnce()
+    expect(fx.service.startNamed.mock.calls[0]?.[2]).toEqual({ question: 'hi' })
+  })
+
+  it('coerces a string-delivered inline manifest into the parsed object (Finding A, V2 inline)', async () => {
+    const fx = fixture()
+    ;(fx.service.attachBackgroundJob as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined)
+    const manifest = JSON.stringify({ name: 'inline-coerced', description: 'coerced inline workflow', phases: ['run'], readOnly: true, maxAgents: 1, maxConcurrency: 1, patterns: ['classify-and-act'] })
+    expect(await fx.tools[1]!.execute({ source: 'async function run(wf, args) { return 1; }', manifest, args: '{"request":"go"}', background: true }, exec)).toMatchObject({ runId: 'run-1', status: 'completed' })
+    expect(fx.service.startInline).toHaveBeenCalledOnce()
+    expect(fx.service.startInline.mock.calls[0]?.[1]?.manifest?.name).toBe('inline-coerced')
+    expect(fx.service.startInline.mock.calls[0]?.[2]).toEqual({ request: 'go' })
+  })
+
+  it('fails loudly when a string-delivered manifest or args value is not valid JSON (Finding A, V3)', async () => {
+    const fx = fixture()
+    await expect(fx.tools[1]!.execute({ source: 'async function run(wf, args) { return 1; }', manifest: '{not json', background: true }, exec)).rejects.toThrow(/manifest must be valid JSON/u)
+    await expect(fx.tools[1]!.execute({ name: 'known', args: 'nope', background: true }, exec)).rejects.toThrow(/args must be valid JSON/u)
+    expect(fx.service.startInline).not.toHaveBeenCalled()
+    expect(fx.service.startNamed).not.toHaveBeenCalled()
   })
 
   it('pins plugin and DSH version metadata to the package manifest and compatibility target', () => {

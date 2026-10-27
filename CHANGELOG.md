@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2] - 2026-10-27
+
+### Fixed
+
+- Tool parameters declared `type: 'json'` (`manifest`, `args` on `run_workflow`, and `args` on `workflow_manage`) are now coerced at the tool entry: objects pass through, a JSON string is parsed, and a string that is not valid JSON fails loudly with the parameter named. The DSH tool layer does not parse `type: 'json'` per argument (upstream gap), so models that double-encode these values as strings previously reached capsule validation raw and failed with `manifest must be an object`.
+- A capability-generated workflow whose approval request fail-closes with `unavailable` (deployments where no approval answerer covers callId-less pre-start requests) now degrades to the same user-questions confirm card trusted-local workflows use. Deterministic refusals (`rejected`, `cancelled`, policy `never`) never degrade — they deny directly, preserving the approval seam's audit trail and strict headless stance.
+
 ## [0.2.1] - 2026-10-26
 
 ### Changed
