@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-  <img alt="DSH 0.2.1-rc.3" src="https://img.shields.io/badge/DSH-0.2.1--rc.3-8257D0.svg">
+  <img alt="DSH 0.2.1-rc.5" src="https://img.shields.io/badge/DSH-0.2.1--rc.5-8257D0.svg">
   <img alt="Tests 194" src="https://img.shields.io/badge/tests-194%20passing-brightgreen.svg">
   <img alt="KodaX workflow parity" src="https://img.shields.io/badge/workflow-KodaX%20parity-0A84FF.svg">
 </p>

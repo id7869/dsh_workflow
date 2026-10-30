@@ -1,37 +1,37 @@
 {
   "target": {
-    "version": "0.2.1-rc.3",
+    "version": "0.2.1-rc.5",
     "buildCommit": "",
-    "sourceTag": "dsh-v0.2.1-rc.3",
-    "sourceTagCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "sourceTag": "dsh-v0.2.1-rc.5",
+    "sourceTagCommit": "b830ec950faba0a46dda564be3e2d854afed94f1",
     "runtimeManifest": "dsh/package.json"
   },
   "pins": {
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/schemastery": "3.18.5",
-    "@deepseek-ai/dsh-agent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-commands": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-jobs": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-session": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-session-title": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-tool-workflow": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-user-questions": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-workflow": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-jobs": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-session-title": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-subagent": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-tool-workflow": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-questions": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-workflow": "0.2.1-rc.5"
   },
   "reference": {
     "type": "local-asar",
     "envOverride": "DSH_ASAR_PATH"
   },
   "npm": {
-    "@deepseek-ai/dsh-agent": "sha512-S6x/deneAsd+pOgecRLM1PC1No9O472kHjS9pS57nuTXi2Vtdo9l7qF+q7PfiHRezL5dxv5gUBQMORPmIYDNvQ==",
-    "@deepseek-ai/dsh-session-title": "sha512-VRMpouxHsviWXmxUrkqLMWyr2Hh5kts72YLWs7GMnKF4ucgGxsyeFm4mtHKskVIh+TOAh1TRn15nOokXnK8BnQ==",
-    "@deepseek-ai/dsh-client-ui-workflow-run": "sha512-O0+MLERqEbNWOkgLKE6Y7Uklv2GTZ7ZwirL2jTSlIKAMSkchxU3RSjt78IyMrFyAE7b+iQe0XK9ECUPN7Bsu9Q==",
+    "@deepseek-ai/dsh-agent": "sha512-mHNbxag0rZVNHaXZvr4OhiveaTTGMNPEpzO4nS8ohOQiQL0MWqA7brwtjBbaAlB3aMZ13tbHGHINpFlXdu8J3Q==",
+    "@deepseek-ai/dsh-session-title": "sha512-o/nfDkGWjlVt0HrcHdrlWeWxqBmUZx3sQlJ3zrU8jdjuAduHUHHWsygJz3c9uK8fFwhlHQdL5vdMbdDxiF2nSw==",
+    "@deepseek-ai/dsh-client-ui-workflow-run": "sha512-4j4qfmYxTt+XjakjXUt4lMngObLNjByIC92k7sGBfMrBe1aHIe98RlpPvoQ9Q51wHRrP+XAtg9OXphNIawe7kg==",
     "quickjs-emscripten": "sha512-So0Sqw869y/S2oE3Nuc0uT3Dhqgvsj8FSrwBdsuTosVsG8ME5/OcudU1GxsrIFdFABgy17GHnTVO9TYV/bLQcA=="
   },
-  "testedAt": "2026-10-26T10:01:00+08:00"
+  "testedAt": "2026-10-30T11:12:35+08:00"
 }

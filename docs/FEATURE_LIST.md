@@ -2,14 +2,15 @@
 
 ## Version Info
 
-- Current Release: v0.2.2
+- Current Release: v0.2.3
 - Planned Version: none
-- Last Updated: 2026-10-27
+- Last Updated: 2026-10-30
 
 ## Version Summary
 
 | Version | Status | Progress |
 | --- | --- | ---: |
+| v0.2.3 | Complete | 1/1 |
 | v0.2.2 | Complete | 2/2 |
 | v0.2.1 | Complete | 1/1 |
 | v0.2.0 | Complete | 2/2 |
@@ -29,6 +30,7 @@
 | 006 | DSH 0.2.1-rc.3 compatibility realignment | Upgrade | High | Complete | v0.2.1 |
 | 007 | Tool-entry JSON coercion for string-delivered parameters | Fix | Critical | Complete | v0.2.2 |
 | 008 | Approval degradation to the user confirm card on unavailable | Fix | Critical | Complete | v0.2.2 |
+| 009 | DSH 0.2.1-rc.5 compatibility realignment | Upgrade | High | Complete | v0.2.3 |
 
 ## Feature Details
 
@@ -96,9 +98,17 @@
 - Status: Complete
 - Released: v0.2.2 (2026-10-27)
 
+### FEATURE_009: DSH 0.2.1-rc.5 compatibility realignment
+
+- Description: Repin every DSH peer and dev dependency to 0.2.1-rc.5 and refresh the compatibility gate (target, source tag, pins, npm artifact integrity, testedAt) after the desktop runtime updated to rc.5. The rc.3→rc.5 source diff over the 12 peer contact-surface packages is version-line-only, so the rc.3-verified call surfaces carry over unchanged; the documented DSH-upgrade realignment procedure was executed end to end.
+- Category: Upgrade
+- Priority: High
+- Status: Complete
+- Released: v0.2.3 (2026-10-30)
+
 ## Summary
 
-- Total: 8
+- Total: 9
 - In Progress: 0
 - Planned: 0
-- Completed: 8
+- Completed: 9

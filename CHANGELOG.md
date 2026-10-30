@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] - 2026-10-30
+
+### Changed
+
+- Compatibility target realigned to DSH `0.2.1-rc.5` (source tag `dsh-v0.2.1-rc.5`, commit `b830ec9`): all `@deepseek-ai/dsh-*` peers and dev dependencies re-pinned, and `compatibility.json` target, pins, npm artifact integrity hashes, and `testedAt` updated. Zero source changes — the rc.3→rc.5 source diff over the 12 peer contact-surface packages is version-line-only, so every rc.3-verified call surface carries over unchanged (the documented DSH-upgrade realignment procedure, executed for real).
+
 ## [0.2.2] - 2026-10-27
 
 ### Fixed
